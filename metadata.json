@@ -1,0 +1,10 @@
+{
+  "name": "Tower Up",
+  "description": "Um sistema integrado de gestão de canteiro de obras",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation",
+    "microphone"
+  ],
+  "majorCapabilities": []
+}

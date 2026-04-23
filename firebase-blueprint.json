@@ -1,0 +1,139 @@
+{
+  "entities": {
+    "User": {
+      "title": "Usuário",
+      "description": "Informações dos usuários do sistema e suas permissões.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "role": { "type": "string", "enum": ["Administrador", "Gestor", "Usuário"] },
+        "companies": { "type": "array", "items": { "type": "string" } },
+        "projects": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "name", "email", "role"]
+    },
+    "Company": {
+      "title": "Empresa",
+      "description": "Dados das empresas cadastradas.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "cnpj": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "name", "cnpj"]
+    },
+    "Project": {
+      "title": "Obra/Projeto",
+      "description": "Dados das obras, incluindo estrutura de custo e mapeamento FVS.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "status": { "type": "string", "enum": ["Ativa", "Inativa"] },
+        "constructionUnits": { "type": "array" },
+        "costStructure": { "type": "array" },
+        "fvsMapping": { "type": "object" },
+        "teams": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "name", "status"]
+    },
+    "Employee": {
+      "title": "Funcionário",
+      "description": "Dados dos colaboradores e prestadores de serviço.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "cpf": { "type": "string" },
+        "status": { "type": "string", "enum": ["Ativo", "Inativo"] },
+        "project": { "type": "string" },
+        "photoBase64": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "name", "cpf", "status"]
+    },
+    "FVS": {
+      "title": "Ficha de Verificação de Serviço",
+      "description": "Modelos de checklists de qualidade.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "revision": { "type": "string" },
+        "items": { "type": "array" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "name", "revision"]
+    },
+    "TimeLog": {
+      "title": "Registro de Ponto",
+      "description": "Logs de entrada e saída com reconhecimento facial e geolocalização.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "employeeId": { "type": "string" },
+        "type": { "type": "string", "enum": ["ENTRADA", "SAÍDA"] },
+        "timestamp": { "type": "number" },
+        "location": { "type": "object" },
+        "capturedPhoto": { "type": "string" },
+        "verified": { "type": "boolean" },
+        "confidence": { "type": "number" }
+      },
+      "required": ["id", "employeeId", "type", "timestamp"]
+    },
+    "ServiceExecution": {
+      "title": "Execução de Serviço",
+      "description": "Acompanhamento real da execução e resultados de FVS.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "projectId": { "type": "string" },
+        "servicePath": { "type": "string" },
+        "componentPath": { "type": "string" },
+        "fvsResults": { "type": "object" },
+        "startDateReal": { "type": "string" },
+        "endDateReal": { "type": "string" }
+      },
+      "required": ["id", "projectId", "servicePath"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Usuários autenticados."
+    },
+    "/companies/{companyId}": {
+      "schema": "Company",
+      "description": "Empresas cadastradas."
+    },
+    "/projects/{projectId}": {
+      "schema": "Project",
+      "description": "Dados das obras."
+    },
+    "/employees/{employeeId}": {
+      "schema": "Employee",
+      "description": "Funcionários cadastrados."
+    },
+    "/fvs/{fvsId}": {
+      "schema": "FVS",
+      "description": "Modelos de fichas de qualidade."
+    },
+    "/timelogs/{logId}": {
+      "schema": "TimeLog",
+      "description": "Logs de ponto biométrico."
+    },
+    "/executions/{executionId}": {
+      "schema": "ServiceExecution",
+      "description": "Acompanhamento de serviços e qualidade."
+    }
+  }
+}
