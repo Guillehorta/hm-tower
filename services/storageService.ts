@@ -1,5 +1,5 @@
 
-import { Employee, TimeLog, Company, Project, JobFunction, User, LaborTracking, DailyMeasurement, Contract, ContractMeasurement, Supplier, ServiceExecution, FVS } from '../types';
+import { Employee, TimeLog, Company, Project, JobFunction, User, LaborTracking, DailyMeasurement, Contract, ContractMeasurement, Supplier, ServiceExecution, FVS, WeatherLog } from '../types';
 import { db } from '../src/firebase';
 import { 
   collection, 
@@ -41,7 +41,8 @@ const KEYS = {
   CONTRACT_MEASUREMENTS: 'contractmeasurements',
   SUPPLIERS: 'suppliers',
   SERVICE_EXECUTIONS: 'executions',
-  FVS: 'fvs'
+  FVS: 'fvs',
+  WEATHER_LOGS: 'weatherlogs'
 };
 
 interface StorageService {
@@ -56,6 +57,7 @@ interface StorageService {
   subscribeJobFunctions: (callback: (data: JobFunction[]) => void) => () => void;
   subscribeLaborTrackings: (callback: (data: LaborTracking[]) => void) => () => void;
   subscribeLogs: (callback: (data: TimeLog[]) => void) => () => void;
+  subscribeWeatherLogs: (callback: (data: WeatherLog[]) => void) => () => void;
   getProjects: () => Promise<Project[]>;
   getEmployees: () => Promise<Employee[]>;
   getSuppliers: () => Promise<Supplier[]>;
@@ -79,8 +81,11 @@ interface StorageService {
   saveProject: (project: Project) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
   saveEmployee: (employee: Employee) => Promise<void>;
+  saveEmployees: (employees: Employee[]) => Promise<void>;
   deleteEmployee: (id: string) => Promise<void>;
   saveLog: (log: TimeLog) => Promise<void>;
+  saveLogs: (logs: TimeLog[]) => Promise<void>;
+  deleteLogs: (ids: string[]) => Promise<void>;
   saveServiceExecution: (execution: ServiceExecution) => Promise<void>;
   saveServiceExecutions: (executions: ServiceExecution[]) => Promise<void>;
   saveCompany: (company: Company) => Promise<void>;
@@ -93,6 +98,7 @@ interface StorageService {
   deleteLaborTrackings: (ids: string[]) => Promise<void>;
   getMeasurements: () => Promise<DailyMeasurement[]>;
   saveMeasurement: (m: DailyMeasurement) => Promise<void>;
+  saveWeatherLog: (log: WeatherLog) => Promise<void>;
 }
 
 // Helper to remove/replace undefined values before saving to Firestore (recursive)
@@ -180,6 +186,12 @@ export const storageService: StorageService = {
     return onSnapshot(collection(db, KEYS.LOGS), (snapshot) => {
       callback(snapshot.docs.map(doc => doc.data() as TimeLog));
     }, (err) => handleFirestoreError(err, OperationType.LIST, KEYS.LOGS));
+  },
+
+  subscribeWeatherLogs: (callback: (data: WeatherLog[]) => void) => {
+    return onSnapshot(collection(db, KEYS.WEATHER_LOGS), (snapshot) => {
+      callback(snapshot.docs.map(doc => doc.data() as WeatherLog));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, KEYS.WEATHER_LOGS));
   },
 
   // CRUD Operations
@@ -409,9 +421,16 @@ export const storageService: StorageService = {
 
   saveLaborTrackings: async (trackings: LaborTracking[]) => {
     try {
-      for (const t of trackings) {
-        const sanitized = sanitizeForFirestore(t);
-        await setDoc(doc(db, KEYS.LABOR_TRACKING, t.id), sanitized);
+      const { writeBatch } = await import('firebase/firestore');
+      for (let i = 0; i < trackings.length; i += 500) {
+        const batch = writeBatch(db);
+        const chunk = trackings.slice(i, i + 500);
+        chunk.forEach(t => {
+          const sanitized = sanitizeForFirestore(t);
+          const docRef = doc(db, KEYS.LABOR_TRACKING, t.id);
+          batch.set(docRef, sanitized);
+        });
+        await batch.commit();
       }
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, KEYS.LABOR_TRACKING);
@@ -420,8 +439,15 @@ export const storageService: StorageService = {
 
   deleteLaborTrackings: async (ids: string[]) => {
     try {
-      for (const id of ids) {
-        await deleteDoc(doc(db, KEYS.LABOR_TRACKING, id));
+      const { writeBatch } = await import('firebase/firestore');
+      for (let i = 0; i < ids.length; i += 500) {
+        const batch = writeBatch(db);
+        const chunk = ids.slice(i, i + 500);
+        chunk.forEach(id => {
+          const docRef = doc(db, KEYS.LABOR_TRACKING, id);
+          batch.delete(docRef);
+        });
+        await batch.commit();
       }
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, KEYS.LABOR_TRACKING);
@@ -481,6 +507,24 @@ export const storageService: StorageService = {
     }
   },
 
+  saveEmployees: async (employees: Employee[]) => {
+    try {
+      const { writeBatch } = await import('firebase/firestore');
+      for (let i = 0; i < employees.length; i += 500) {
+        const batch = writeBatch(db);
+        const chunk = employees.slice(i, i + 500);
+        chunk.forEach(emp => {
+          const sanitized = sanitizeForFirestore(emp);
+          const docRef = doc(db, KEYS.EMPLOYEES, emp.id);
+          batch.set(docRef, sanitized);
+        });
+        await batch.commit();
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, KEYS.EMPLOYEES);
+    }
+  },
+
   deleteEmployee: async (id: string) => {
     try {
       await deleteDoc(doc(db, KEYS.EMPLOYEES, id));
@@ -498,6 +542,44 @@ export const storageService: StorageService = {
     }
   },
 
+  saveLogs: async (logs: TimeLog[]) => {
+    try {
+      const { writeBatch } = await import('firebase/firestore');
+      // Firestore batches are limited to 500 operations
+      for (let i = 0; i < logs.length; i += 500) {
+        const batch = writeBatch(db);
+        const chunk = logs.slice(i, i + 500);
+        
+        chunk.forEach(log => {
+          const sanitized = sanitizeForFirestore(log);
+          const docRef = doc(db, KEYS.LOGS, log.id);
+          batch.set(docRef, sanitized);
+        });
+        
+        await batch.commit();
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, KEYS.LOGS);
+    }
+  },
+
+  deleteLogs: async (ids: string[]) => {
+    try {
+      const { writeBatch } = await import('firebase/firestore');
+      for (let i = 0; i < ids.length; i += 500) {
+        const batch = writeBatch(db);
+        const chunk = ids.slice(i, i + 500);
+        chunk.forEach(id => {
+          const docRef = doc(db, KEYS.LOGS, id);
+          batch.delete(docRef);
+        });
+        await batch.commit();
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, KEYS.LOGS);
+    }
+  },
+
   saveServiceExecution: async (execution: ServiceExecution) => {
     try {
       const sanitized = sanitizeForFirestore(execution);
@@ -509,12 +591,28 @@ export const storageService: StorageService = {
 
   saveServiceExecutions: async (executions: ServiceExecution[]) => {
     try {
-      for (const ex of executions) {
-        const sanitized = sanitizeForFirestore(ex);
-        await setDoc(doc(db, KEYS.SERVICE_EXECUTIONS, ex.id), sanitized);
+      const { writeBatch } = await import('firebase/firestore');
+      for (let i = 0; i < executions.length; i += 500) {
+        const batch = writeBatch(db);
+        const chunk = executions.slice(i, i + 500);
+        chunk.forEach(ex => {
+          const sanitized = sanitizeForFirestore(ex);
+          const docRef = doc(db, KEYS.SERVICE_EXECUTIONS, ex.id);
+          batch.set(docRef, sanitized);
+        });
+        await batch.commit();
       }
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, KEYS.SERVICE_EXECUTIONS);
+    }
+  },
+
+  saveWeatherLog: async (log: WeatherLog) => {
+    try {
+      const sanitized = sanitizeForFirestore(log);
+      await setDoc(doc(db, KEYS.WEATHER_LOGS, log.id), sanitized);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `${KEYS.WEATHER_LOGS}/${log.id}`);
     }
   }
 };

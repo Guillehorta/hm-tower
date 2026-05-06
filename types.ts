@@ -93,6 +93,32 @@ export interface Project {
   costStructure?: CostCenter[];
   fvsMapping?: { [servicePath: string]: string }; // servicePath -> fvsId
   teams?: string[];
+  latitude?: number;
+  longitude?: number;
+  city?: string;
+  createdAt: number;
+}
+
+export interface WeatherLog {
+  id: string;
+  projectId: string;
+  date: string; // YYYY-MM-DD
+  morning: {
+    temp: number;
+    condition: string;
+    conditionCode: number;
+  };
+  afternoon: {
+    temp: number;
+    condition: string;
+    conditionCode: number;
+  };
+  night: {
+    temp: number;
+    condition: string;
+    conditionCode: number;
+  };
+  precipitation: number;
   createdAt: number;
 }
 
@@ -320,6 +346,7 @@ export interface ServiceExecution {
   endDatePlanned?: string;
   startDateReal?: string;
   endDateReal?: string;
+  status?: 'Nao Iniciado' | 'Iniciado' | 'Concluido';
   fvsResults?: {
     [itemId: string]: {
       [subItemId: string]: 'NC' | 'C' | 'NA' | 'CR'; // NC: Não Conforme, C: Conforme, NA: Não Aplicável, CR: Conforme após reinspeção

@@ -14,6 +14,10 @@ import { geminiService } from './services/geminiService';
 import { generateId } from './src/lib/utils';
 import { PlanningView } from './components/Planning';
 import { QualityModule } from './components/QualityModule';
+import { TimeTrackingModule } from './components/TimeTrackingModule';
+import { WeatherView } from './components/WeatherView';
+import { MainDashboard } from './components/MainDashboard';
+import { weatherService } from './services/weatherService';
 import { auth, db } from './src/firebase';
 import { 
   signInWithPopup, 
@@ -22,18 +26,20 @@ import {
   signOut,
   signInWithEmailAndPassword
 } from 'firebase/auth';
-import { Employee, TimeLog, LogType, Location, Company, Project, JobFunction, User, UserRole, ConstructionUnit, LaborTracking, DailyMeasurement, CostCenter, Contract, ContractMeasurement, Supplier, ServiceExecution, FVS } from './types';
+import { Employee, TimeLog, LogType, Location, Company, Project, JobFunction, User, UserRole, ConstructionUnit, LaborTracking, DailyMeasurement, CostCenter, Contract, ContractMeasurement, Supplier, ServiceExecution, FVS, WeatherLog } from './types';
 
-type ViewType = 'dashboard' | 'register' | 'admin' | 'companies' | 'projects' | 'functions' | 'daily_report' | 'period_report' | 'users' | 'login' | 'measurements' | 'suppliers' | 'employees' | 'planning' | 'quality' | 'labor_tracking';
+type ViewType = 'dashboard' | 'register' | 'admin' | 'companies' | 'projects' | 'functions' | 'daily_report' | 'period_report' | 'users' | 'login' | 'measurements' | 'suppliers' | 'employees' | 'planning' | 'quality' | 'labor_tracking' | 'weather';
 
 const App: React.FC = () => {
   const [view, setView] = useState<ViewType>('register');
-  const [isCadastrosOpen, setIsCadastrosOpen] = useState(true);
+  const [isMaodeObraOpen, setIsMaodeObraOpen] = useState(true);
+  const [isCadastrosOpen, setIsCadastrosOpen] = useState(false);
   const [isRelatoriosOpen, setIsRelatoriosOpen] = useState(false);
   const [isMedicoesOpen, setIsMedicoesOpen] = useState(false);
   const [isPlanningOpen, setIsPlanningOpen] = useState(false);
   const [isQualityOpen, setIsQualityOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isWeatherSynced, setIsWeatherSynced] = useState(false);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -48,6 +54,7 @@ const App: React.FC = () => {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [serviceExecutions, setServiceExecutions] = useState<ServiceExecution[]>([]);
   const [fvsList, setFvsList] = useState<FVS[]>([]);
+  const [weatherLogs, setWeatherLogs] = useState<WeatherLog[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error', msg: string } | null>(null);
@@ -87,6 +94,9 @@ const App: React.FC = () => {
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [newProjectCode, setNewProjectCode] = useState('');
   const [newProjectName, setNewProjectName] = useState('');
+  const [newProjectCity, setNewProjectCity] = useState('');
+  const [newProjectLatitude, setNewProjectLatitude] = useState<number | undefined>(undefined);
+  const [newProjectLongitude, setNewProjectLongitude] = useState<number | undefined>(undefined);
   const [newProjectStatus, setNewProjectStatus] = useState<'Ativa' | 'Inativa'>('Ativa');
   const [newProjectConstructionUnits, setNewProjectConstructionUnits] = useState<ConstructionUnit[]>([]);
   const [newProjectCostStructure, setNewProjectCostStructure] = useState<CostCenter[]>([]);
@@ -144,33 +154,63 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!currentUser) return;
 
-    // Subscriptions
+    // Subscriptions based on roles
+    const isManager = currentUser.role === UserRole.ADMIN || currentUser.role === UserRole.MANAGER;
+
     const unsubFvs = storageService.subscribeFVS(setFvsList);
     const unsubProjects = storageService.subscribeProjects(setProjects);
     const unsubEmployees = storageService.subscribeEmployees(setEmployees);
-    const unsubSuppliers = storageService.subscribeSuppliers(setSuppliers);
-    const unsubContracts = storageService.subscribeContracts(setContracts);
-    const unsubContractM = storageService.subscribeContractMeasurements(setContractMeasurements);
-    const unsubExecutions = storageService.subscribeExecutions(setServiceExecutions);
     const unsubCompanies = storageService.subscribeCompanies(setCompanies);
     const unsubJobFunctions = storageService.subscribeJobFunctions(setJobFunctions);
+    const unsubWeather = storageService.subscribeWeatherLogs(setWeatherLogs);
     const unsubTrackings = storageService.subscribeLaborTrackings(setTrackings);
-    const unsubLogs = storageService.subscribeLogs(setLogs);
+
+    // Manager+ only data
+    let unsubSuppliers = () => {};
+    let unsubContracts = () => {};
+    let unsubContractM = () => {};
+    let unsubExecutions = () => {};
+    let unsubLogs = () => {};
+
+    if (isManager) {
+      unsubSuppliers = storageService.subscribeSuppliers(setSuppliers);
+      unsubContracts = storageService.subscribeContracts(setContracts);
+      unsubContractM = storageService.subscribeContractMeasurements(setContractMeasurements);
+      unsubExecutions = storageService.subscribeExecutions(setServiceExecutions);
+      unsubLogs = storageService.subscribeLogs(setLogs);
+    }
 
     return () => {
       unsubFvs();
       unsubProjects();
       unsubEmployees();
-      unsubSuppliers();
-      unsubContracts();
-      unsubContractM();
-      unsubExecutions();
       unsubCompanies();
       unsubJobFunctions();
+      unsubWeather();
       unsubTrackings();
-      unsubLogs();
+      if (isManager) {
+        unsubSuppliers();
+        unsubContracts();
+        unsubContractM();
+        unsubExecutions();
+        unsubLogs();
+      }
     };
   }, [currentUser]);
+
+  // Weather Auto-Sync Logic
+  useEffect(() => {
+    if (projects.length > 0 && !isWeatherSynced && weatherLogs.length >= 0) {
+      const now = new Date();
+      const hour = now.getHours();
+      
+      // Auto-sync if it's after 6 AM
+      if (hour >= 6) {
+        weatherService.syncYesterdayWeather(projects, weatherLogs);
+        setIsWeatherSynced(true);
+      }
+    }
+  }, [projects, weatherLogs, isWeatherSynced]);
 
   const handleGoogleLogin = async () => {
     try {
@@ -314,6 +354,9 @@ const App: React.FC = () => {
       constructionUnits: newProjectConstructionUnits,
       costStructure: newProjectCostStructure,
       fvsMapping: newProjectFvsMapping,
+      city: newProjectCity,
+      latitude: newProjectLatitude,
+      longitude: newProjectLongitude,
       createdAt: Date.now()
     };
 
@@ -321,6 +364,9 @@ const App: React.FC = () => {
     setFeedback({ type: 'success', msg: editingProjectId ? "Obra atualizada com sucesso!" : "Obra cadastrada com sucesso!" });
     setNewProjectCode('');
     setNewProjectName('');
+    setNewProjectCity('');
+    setNewProjectLatitude(undefined);
+    setNewProjectLongitude(undefined);
     setNewProjectStatus('Ativa');
     setNewProjectConstructionUnits([]);
     setNewProjectCostStructure([]);
@@ -333,6 +379,9 @@ const App: React.FC = () => {
   const handleEditProject = (proj: Project) => {
     setNewProjectCode(proj.code);
     setNewProjectName(proj.name);
+    setNewProjectCity(proj.city || '');
+    setNewProjectLatitude(proj.latitude);
+    setNewProjectLongitude(proj.longitude);
     setNewProjectStatus(proj.status);
     setNewProjectConstructionUnits(proj.constructionUnits || []);
     setNewProjectCostStructure(proj.costStructure || []);
@@ -369,8 +418,22 @@ const App: React.FC = () => {
     storageService.saveEmployee(employee);
   };
 
+  const handleSaveEmployees = (employees: Employee[]) => {
+    storageService.saveEmployees(employees);
+  };
+
   const handleDeleteEmployee = (id: string) => {
     storageService.deleteEmployee(id);
+  };
+
+  const handleImportLogs = async (newLogs: TimeLog[]) => {
+    await storageService.saveLogs(newLogs);
+    setFeedback({ type: 'success', msg: `${newLogs.length} registros importados com sucesso!` });
+    clearFeedback();
+  };
+
+  const handleDeleteLogs = async (ids: string[]) => {
+    await storageService.deleteLogs(ids);
   };
 
   const handleSaveServiceExecution = (execution: ServiceExecution) => {
@@ -595,25 +658,55 @@ const App: React.FC = () => {
               {!isSidebarCollapsed && <span>Dashboard</span>}
             </button>
           )}
+
+          <div className="pt-2">
+            <button 
+              onClick={() => !isSidebarCollapsed && setIsMaodeObraOpen(!isMaodeObraOpen)}
+              className={`w-full text-left px-4 py-2 text-indigo-300 text-xs font-bold uppercase tracking-wider flex items-center justify-between hover:text-white transition ${isSidebarCollapsed ? 'justify-center px-0' : ''}`}
+              title={isSidebarCollapsed ? 'Mão-de-obra' : ''}
+            >
+              {isSidebarCollapsed ? <i className="fas fa-users-cog w-5 text-center"></i> : <span>Mão-de-obra</span>}
+              {!isSidebarCollapsed && <i className={`fas fa-chevron-${isMaodeObraOpen ? 'down' : 'right'} text-[10px]`}></i>}
+            </button>
+
+            {isMaodeObraOpen && !isSidebarCollapsed && (
+              <div className="mt-1 space-y-1 ml-2 border-l border-indigo-800/50">
+                <button 
+                  onClick={() => setView('register')}
+                  className={`w-full text-left px-6 py-2.5 rounded-r-xl transition flex items-center gap-3 text-sm ${view === 'register' ? 'bg-indigo-800 text-white' : 'text-indigo-100 hover:bg-indigo-800/30'}`}
+                >
+                  <i className="fas fa-camera w-4"></i> Registro de Ponto
+                </button>
+                <button 
+                  onClick={() => setView('labor_tracking')}
+                  className={`w-full text-left px-6 py-2.5 rounded-r-xl transition flex items-center gap-3 text-sm ${view === 'labor_tracking' ? 'bg-indigo-800 text-white' : 'text-indigo-100 hover:bg-indigo-800/30'}`}
+                >
+                  <i className="fas fa-clipboard-list w-4"></i> Apontamento de Mão-de-Obra
+                </button>
+              </div>
+            )}
+            
+            {/* Collapsed view items for MaodeObra */}
+            {isSidebarCollapsed && (
+              <>
+                <button 
+                  onClick={() => setView('register')}
+                  className={`w-full text-left px-4 py-3 rounded-xl transition flex items-center gap-3 ${view === 'register' ? 'bg-indigo-800' : 'hover:bg-indigo-800/50'} justify-center px-0`}
+                  title="Registro de Ponto"
+                >
+                  <i className="fas fa-camera w-5 shrink-0"></i> 
+                </button>
+                <button 
+                  onClick={() => setView('labor_tracking')}
+                  className={`w-full text-left px-4 py-3 rounded-xl transition flex items-center gap-3 ${view === 'labor_tracking' ? 'bg-indigo-800' : 'hover:bg-indigo-800/50'} justify-center px-0`}
+                  title="Apontamento de Mão-de-Obra"
+                >
+                  <i className="fas fa-clipboard-list w-5 shrink-0"></i> 
+                </button>
+              </>
+            )}
+          </div>
           
-          <button 
-            onClick={() => setView('register')}
-            className={`w-full text-left px-4 py-3 rounded-xl transition flex items-center gap-3 ${view === 'register' ? 'bg-indigo-800' : 'hover:bg-indigo-800/50'} ${isSidebarCollapsed ? 'justify-center px-0' : ''}`}
-            title={isSidebarCollapsed ? 'Registrar Ponto' : ''}
-          >
-            <i className="fas fa-camera w-5 shrink-0"></i> 
-            {!isSidebarCollapsed && <span>Registrar Ponto</span>}
-          </button>
-
-          <button 
-            onClick={() => setView('labor_tracking')}
-            className={`w-full text-left px-4 py-3 rounded-xl transition flex items-center gap-3 ${view === 'labor_tracking' ? 'bg-indigo-800' : 'hover:bg-indigo-800/50'} ${isSidebarCollapsed ? 'justify-center px-0' : ''}`}
-            title={isSidebarCollapsed ? 'Apontamento de Mão-de-Obra' : ''}
-          >
-            <i className="fas fa-clipboard-list w-5 shrink-0"></i> 
-            {!isSidebarCollapsed && <span>Apontamento de Mão-de-Obra</span>}
-          </button>
-
           {currentUser && (
             <div className="pt-2">
               <button 
@@ -768,6 +861,17 @@ const App: React.FC = () => {
               </div>
             )}
           </div>
+
+          <div className="pt-2">
+            <button 
+              onClick={() => setView('weather')}
+              className={`w-full text-left px-4 py-2 text-indigo-300 text-xs font-bold uppercase tracking-wider flex items-center gap-3 hover:text-white transition ${isSidebarCollapsed ? 'justify-center px-0' : ''}`}
+              title={isSidebarCollapsed ? 'Clima' : ''}
+            >
+              <i className="fas fa-cloud-sun w-5 text-center"></i>
+              {!isSidebarCollapsed && <span>Clima</span>}
+            </button>
+          </div>
         </nav>
 
         <div className={`p-4 border-t border-indigo-800/50 ${isSidebarCollapsed ? 'flex justify-center' : ''}`}>
@@ -814,6 +918,7 @@ const App: React.FC = () => {
             {view === 'measurements' && 'Medição de Contratos'}
             {view === 'labor_tracking' && 'Apontamento de Mão-de-Obra'}
             {view === 'planning' && 'Planejamento de Obras'}
+            {view === 'weather' && 'Histórico Climático'}
           </h1>
           <div className="flex items-center gap-4">
              <div className="text-right">
@@ -840,136 +945,31 @@ const App: React.FC = () => {
           
           {/* Dashboard View */}
           {view === 'dashboard' && currentUser && (
-            <div className="max-w-6xl mx-auto space-y-8">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                  <div className="flex items-center gap-4 mb-4 text-indigo-600">
-                    <i className="fas fa-users text-2xl"></i>
-                    <h3 className="font-semibold">Total de Funcionários</h3>
-                  </div>
-                  <p className="text-3xl font-bold text-slate-800">
-                    {employees.filter(emp => 
-                      currentUser.role === UserRole.ADMIN || 
-                      (currentUser.companies?.includes(emp.company) && emp.projects?.some(p => currentUser.projects?.includes(p)))
-                    ).length}
-                  </p>
-                </div>
-                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                  <div className="flex items-center gap-4 mb-4 text-emerald-600">
-                    <i className="fas fa-clock text-2xl"></i>
-                    <h3 className="font-semibold">Registros Hoje</h3>
-                  </div>
-                  <p className="text-3xl font-bold text-slate-800">
-                    {logs.filter(l => {
-                      const isToday = new Date(l.timestamp).toDateString() === new Date().toDateString();
-                      if (!isToday) return false;
-                      if (currentUser.role === UserRole.ADMIN) return true;
-                      const emp = employees.find(e => e.id === l.employeeId);
-                      return emp && currentUser.companies?.includes(emp.company) && emp.projects?.some(p => currentUser.projects?.includes(p));
-                    }).length}
-                  </p>
-                </div>
-                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                  <div className="flex items-center gap-4 mb-4 text-amber-600">
-                    <i className="fas fa-shield-alt text-2xl"></i>
-                    <h3 className="font-semibold">Status de Segurança</h3>
-                  </div>
-                  <p className="text-3xl font-bold text-slate-800">Ativo</p>
-                </div>
-              </div>
-
-              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-                <div className="p-6 border-b border-slate-100 flex justify-between items-center">
-                  <h3 className="font-bold text-slate-800">Logs Recentes</h3>
-                  <button onClick={() => setView('daily_report')} className="text-indigo-600 text-sm font-medium hover:underline">Ver Histórico Completo</button>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-semibold">
-                      <tr>
-                        <th className="px-6 py-4 text-left">Funcionário</th>
-                        <th className="px-6 py-4 text-left">Tipo</th>
-                        <th className="px-6 py-4 text-left">Horário</th>
-                        <th className="px-6 py-4 text-left">Localização</th>
-                        <th className="px-6 py-4 text-left">Verificação AI</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {logs?.filter(l => {
-                        if (currentUser.role === UserRole.ADMIN) return true;
-                        const emp = employees.find(e => e.id === l.employeeId);
-                        return emp && currentUser.companies?.includes(emp.company) && emp.projects?.some(p => currentUser.projects?.includes(p));
-                      }).slice(0, 10).length === 0 ? (
-                        <tr>
-                          <td colSpan={5} className="px-6 py-10 text-center text-slate-400">Nenhum registro encontrado.</td>
-                        </tr>
-                      ) : (
-                        logs?.filter(l => {
-                          if (currentUser.role === UserRole.ADMIN) return true;
-                          const emp = employees.find(e => e.id === l.employeeId);
-                          return emp && currentUser.companies?.includes(emp.company) && emp.projects?.some(p => currentUser.projects?.includes(p));
-                        }).slice(0, 10).map(log => (
-                          <tr key={log.id} className="hover:bg-slate-50 transition-colors">
-                            <td className="px-6 py-4">
-                              <div className="flex items-center gap-3">
-                                <img src={log.capturedPhoto} className="w-8 h-8 rounded-full object-cover border border-slate-200" alt="" />
-                                <span className="font-medium text-slate-800">{log.employeeName}</span>
-                              </div>
-                            </td>
-                            <td className="px-6 py-4">
-                              <span className={`px-2 py-1 rounded-full text-[10px] font-bold ${
-                                log.type === LogType.IN ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
-                              }`}>
-                                {log.type}
-                              </span>
-                            </td>
-                            <td className="px-6 py-4 text-slate-600 text-sm">
-                              {new Date(log.timestamp).toLocaleString('pt-BR')}
-                            </td>
-                            <td className="px-6 py-4 text-slate-500 text-xs">
-                              {log.location.latitude.toFixed(4)}, {log.location.longitude.toFixed(4)}
-                            </td>
-                            <td className="px-6 py-4">
-                              <div className="flex items-center gap-2">
-                                <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
-                                <span className="text-xs text-slate-600">{(log.confidence * 100).toFixed(0)}% confiança</span>
-                              </div>
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+            <div className="max-w-7xl mx-auto">
+              <MainDashboard 
+                projects={projects}
+                employees={employees}
+                logs={logs}
+                weatherLogs={weatherLogs}
+                serviceExecutions={serviceExecutions}
+                fvs={fvsList}
+                currentUser={currentUser}
+              />
             </div>
           )}
 
           {/* Register Point View */}
           {view === 'register' && (
-            <div className="max-w-2xl mx-auto flex flex-col items-center">
-              <div className="text-center mb-8">
-                <h2 className="text-3xl font-bold text-slate-800 mb-2">Ponto Facial</h2>
-                <p className="text-slate-500">Posicione seu rosto dentro do círculo para identificação automática.</p>
-              </div>
-              
-              <Camera 
-                onCapture={handlePointRegistration} 
-                isLoading={isProcessing} 
-              />
-
-              <div className="mt-8 bg-indigo-50 p-6 rounded-2xl border border-indigo-100 text-indigo-800 flex items-start gap-4">
-                <i className="fas fa-info-circle mt-1"></i>
-                <div>
-                  <h4 className="font-bold mb-1 text-sm">Dicas de Uso:</h4>
-                  <ul className="text-xs space-y-1 opacity-80 list-disc list-inside">
-                    <li>Garanta que o ambiente esteja bem iluminado</li>
-                    <li>Mantenha o rosto centralizado no visor</li>
-                    <li>Evite acessórios que cubram muito o rosto (óculos escuros, máscaras)</li>
-                  </ul>
-                </div>
-              </div>
-            </div>
+            <TimeTrackingModule 
+              employees={employees}
+              logs={logs}
+              projects={projects}
+              companies={companies}
+              onRegisterPoint={handlePointRegistration}
+              onImportLogs={handleImportLogs}
+              onDeleteLogs={handleDeleteLogs}
+              isProcessing={isProcessing}
+            />
           )}
 
           {/* Admin / Management View */}
@@ -1303,6 +1303,38 @@ const App: React.FC = () => {
                         onChange={(e) => setNewProjectName(e.target.value)}
                         className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition"
                         placeholder="Ex: Edifício Central"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-bold text-slate-700 mb-2 uppercase tracking-wide">Cidade</label>
+                      <input 
+                        type="text" 
+                        value={newProjectCity}
+                        onChange={(e) => setNewProjectCity(e.target.value)}
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition"
+                        placeholder="Ex: São Paulo"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-bold text-slate-700 mb-2 uppercase tracking-wide">Latitude</label>
+                      <input 
+                        type="number" 
+                        step="any"
+                        value={newProjectLatitude || ''}
+                        onChange={(e) => setNewProjectLatitude(parseFloat(e.target.value) || undefined)}
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition"
+                        placeholder="Ex: -23.5505"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-bold text-slate-700 mb-2 uppercase tracking-wide">Longitude</label>
+                      <input 
+                        type="number" 
+                        step="any"
+                        value={newProjectLongitude || ''}
+                        onChange={(e) => setNewProjectLongitude(parseFloat(e.target.value) || undefined)}
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition"
+                        placeholder="Ex: -46.6333"
                       />
                     </div>
                     <div>
@@ -2079,6 +2111,14 @@ const App: React.FC = () => {
             </div>
           )}
 
+          {/* Weather History View */}
+          {view === 'weather' && (
+            <WeatherView 
+              projects={projects}
+              weatherLogs={weatherLogs}
+            />
+          )}
+
           {/* Suppliers View */}
           {view === 'suppliers' && currentUser && (
             <div className="max-w-full mx-auto space-y-8">
@@ -2116,6 +2156,7 @@ const App: React.FC = () => {
                 projects={userProjects}
                 jobFunctions={jobFunctions}
                 onSaveEmployee={handleSaveEmployee}
+                onSaveEmployees={handleSaveEmployees}
                 onDeleteEmployee={handleDeleteEmployee}
                 onSaveJobFunction={(jf) => storageService.saveJobFunction(jf)}
                 onFeedback={handleFeedback}

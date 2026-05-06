@@ -10,6 +10,7 @@ interface EmployeeAdminProps {
   projects: Project[];
   jobFunctions: JobFunction[];
   onSaveEmployee: (employee: Employee) => void;
+  onSaveEmployees: (employees: Employee[]) => void;
   onDeleteEmployee: (id: string) => void;
   onSaveJobFunction?: (jf: JobFunction) => void;
   onFeedback?: (type: 'success' | 'error', msg: string) => void;
@@ -23,6 +24,7 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
   projects,
   jobFunctions,
   onSaveEmployee,
+  onSaveEmployees,
   onDeleteEmployee,
   onSaveJobFunction,
   onFeedback
@@ -41,6 +43,7 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
   const [filterCompany, setFilterCompany] = useState('');
   const [filterProject, setFilterProject] = useState('');
   const [filterName, setFilterName] = useState('');
+  const [filterStatus, setFilterStatus] = useState<'Ativo' | 'Inativo' | ''>('Ativo');
 
   const filteredEmployees = useMemo(() => {
     return employees
@@ -48,10 +51,40 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
         const matchCompany = !filterCompany || emp.company === filterCompany;
         const matchProject = !filterProject || emp.projects?.includes(filterProject);
         const matchName = !filterName || emp.name.toLowerCase().includes(filterName.toLowerCase());
-        return matchCompany && matchProject && matchName;
+        const matchStatus = !filterStatus || emp.status === filterStatus;
+        return matchCompany && matchProject && matchName && matchStatus;
       })
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [employees, filterCompany, filterProject, filterName]);
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  }, [employees, filterCompany, filterProject, filterName, filterStatus]);
+
+  const handleRemoveDuplicates = () => {
+    const uniqueCpfs = new Set<string>();
+    const toDeleteIds: string[] = [];
+    
+    // Sort by createdAt descending to keep the most recent one if duplicates exist
+    const sortedEmployees = [...employees].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    
+    sortedEmployees.forEach(emp => {
+      const cleanCpf = emp.cpf.replace(/\D/g, '');
+      if (!cleanCpf) return; // Skip if no CPF
+      
+      if (uniqueCpfs.has(cleanCpf)) {
+        toDeleteIds.push(emp.id);
+      } else {
+        uniqueCpfs.add(cleanCpf);
+      }
+    });
+
+    if (toDeleteIds.length === 0) {
+      onFeedback?.('success', 'Nenhuma duplicata de CPF encontrada.');
+      return;
+    }
+
+    if (window.confirm(`Foram encontradas ${toDeleteIds.length} duplicatas. Deseja removê-las mantendo apenas o registro mais recente de cada CPF?`)) {
+      toDeleteIds.forEach(id => onDeleteEmployee(id));
+      onFeedback?.('success', `${toDeleteIds.length} duplicatas removidas com sucesso.`);
+    }
+  };
 
   const handleNewEmployee = () => {
     setEditingEmployee({
@@ -98,6 +131,16 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
       onFeedback?.('error', 'Preencha os campos obrigatórios (Nome, Empresa e ao menos uma Obra).');
       return;
     }
+
+    // CPF Duplication check
+    if (editingEmployee.cpf) {
+      const isDuplicate = employees.some(e => e.cpf === editingEmployee.cpf && e.id !== editingEmployee.id);
+      if (isDuplicate) {
+        onFeedback?.('error', 'Já existe um colaborador cadastrado com este CPF.');
+        return;
+      }
+    }
+
     const finalEmployee = {
       ...editingEmployee,
       name: editingEmployee.name.toUpperCase()
@@ -169,6 +212,7 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
     let importedCount = 0;
     let updatedCount = 0;
     let skippedCount = 0;
+    const employeesToSave: Employee[] = [];
 
     for (let i = 0; i < pendingLines.length; i++) {
       if (!pendingLines[i].trim()) continue;
@@ -189,8 +233,11 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
       const observation = values[11];
       const cpf = maskCPF(values[12] || '');
       const role = values[13] || '(Não informado)';
+      
+      const rawStatus = values[14] || '';
+      const status = (rawStatus.toUpperCase().includes('INATIVO') || rawStatus.toUpperCase().includes('DESLIGADO')) ? 'Inativo' : 'Ativo';
 
-      if (!cpf || !name) {
+      if (!cpf || !name || name.toUpperCase() === 'NOME') {
         skippedCount++;
         continue;
       }
@@ -212,13 +259,14 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
           projects: [project],
           admissionDate: rawDate.includes('/') ? `${rawDate.split('/')[2]}-${rawDate.split('/')[1]}-${rawDate.split('/')[0]}` : existingEmployee.admissionDate,
           regime: observation.toUpperCase().includes('DIARISTA') ? 'Diarista' : 'CLT',
+          status: status, // Update status from import
           documents: {
             ...existingEmployee.documents,
             pis: { number: pis },
             ctps: { number: ctps }
           }
         };
-        onSaveEmployee(updatedEmployee);
+        employeesToSave.push(updatedEmployee);
         updatedCount++;
         continue;
       }
@@ -248,7 +296,7 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
         cpf: cpf,
         birthDate: '',
         regime: observation.toUpperCase().includes('DIARISTA') ? 'Diarista' : 'CLT',
-        status: 'Ativo',
+        status: status,
         photoBase64: '',
         createdAt: Date.now(),
         entryTime: '08:00',
@@ -269,8 +317,12 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
         }
       };
 
-      onSaveEmployee(newEmployee);
+      employeesToSave.push(newEmployee);
       importedCount++;
+    }
+
+    if (employeesToSave.length > 0) {
+      onSaveEmployees(employeesToSave);
     }
 
     const msg = updateExisting 
@@ -305,6 +357,8 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
       }
     });
 
+    const employeesToSave: Employee[] = [];
+
     for (const remoteEmp of pendingAPIData) {
       const name = remoteEmp.Nome;
       const cpf = maskCPF(remoteEmp.Cpf || '');
@@ -328,6 +382,10 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
       const department = remoteEmp.DepartamentoDescricao || remoteEmp.DepartamentoNome || 
                         (remoteEmp.Departamento ? (remoteEmp.Departamento.Descricao || remoteEmp.Departamento.Nome) : null) || '';
       
+      // Map status from Secullum API
+      const isInactive = remoteEmp.Inativo === true || remoteEmp.Situacao === 2 || remoteEmp.Situacao === 'Demitido'; 
+      const status = isInactive ? 'Inativo' : 'Ativo';
+
       // Parse Date (usually ISO or YYYY-MM-DD from API)
       let admissionDate = new Date().toISOString().split('T')[0];
       if (remoteEmp.Admissao) {
@@ -353,8 +411,8 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
           role,
           jobFunction: role,
           department,
-          company: companies.find(c => c.name === company)?.name || company,
-          projects: department ? [department] : existingEmployee.projects,
+          company: '', // Deixar vazio para preenchimento manual posterior
+          projects: [], // Deixar vazio para preenchimento manual posterior
           admissionDate,
           email,
           phone,
@@ -363,12 +421,13 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
           city: remoteEmp.Cidade || existingEmployee.city,
           state: remoteEmp.Uf || existingEmployee.state,
           zipCode: remoteEmp.Cep || existingEmployee.zipCode,
+          status: status,
           documents: {
             ...existingEmployee.documents,
             pis: { number: pis }
           }
         };
-        onSaveEmployee(updatedEmployee);
+        employeesToSave.push(updatedEmployee);
         updatedCount++;
         continue;
       }
@@ -379,13 +438,13 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
         role,
         jobFunction: role,
         department,
-        company: companies.find(c => c.name === company)?.name || company,
-        projects: department ? [department] : (projects[0]?.name ? [projects[0].name] : []), // Use department from Secullum as project name
+        company: '', // Deixar vazio para preenchimento manual posterior
+        projects: [], // Deixar vazio para preenchimento manual posterior
         admissionDate,
         cpf,
         birthDate: remoteEmp.Nascimento ? remoteEmp.Nascimento.split('T')[0] : '',
         regime: 'CLT',
-        status: 'Ativo',
+        status: status,
         photoBase64: '',
         createdAt: Date.now(),
         email,
@@ -412,8 +471,12 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
         }
       };
 
-      onSaveEmployee(newEmployee);
+      employeesToSave.push(newEmployee);
       importedCount++;
+    }
+
+    if (employeesToSave.length > 0) {
+      onSaveEmployees(employeesToSave);
     }
 
     const msg = updateExisting 
@@ -469,6 +532,13 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
             <h2 className="text-2xl font-bold text-slate-800">Administração de Colaboradores</h2>
             <div className="flex gap-3">
               <button
+                onClick={handleRemoveDuplicates}
+                className="px-6 py-3 bg-rose-50 text-rose-600 rounded-2xl font-bold hover:bg-rose-100 transition flex items-center gap-2 border border-rose-100"
+                title="Procurar e remover colaboradores com CPF duplicado"
+              >
+                <i className="fas fa-clone"></i> Sanear Duplicatas
+              </button>
+              <button
                 onClick={handleImportAPI}
                 disabled={isLoadingAPI}
                 className="px-6 py-3 bg-white border border-slate-200 text-slate-600 rounded-2xl font-bold hover:bg-slate-50 transition shadow-sm flex items-center gap-2"
@@ -498,7 +568,19 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
             </div>
           </div>
 
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Status</label>
+              <select
+                value={filterStatus}
+                onChange={(e) => setFilterStatus(e.target.value as any)}
+                className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="">Todos</option>
+                <option value="Ativo">Ativos</option>
+                <option value="Inativo">Inativos</option>
+              </select>
+            </div>
             <div>
               <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Empresa</label>
               <select
@@ -549,14 +631,19 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-3">
                         <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center overflow-hidden border border-slate-200">
-                          {emp.photoBase64 ? (
+                          {emp.photoBase64 && emp.photoBase64.length > 0 ? (
                             <img src={emp.photoBase64} alt="" className="w-full h-full object-cover" />
                           ) : (
                             <i className="fas fa-user text-slate-400"></i>
                           )}
                         </div>
                         <div>
-                          <div className="font-bold text-slate-800">{emp.name.toUpperCase()}</div>
+                          <div className="flex items-center gap-2">
+                            <div className="font-bold text-slate-800">{emp.name.toUpperCase()}</div>
+                            {emp.status === 'Inativo' && (
+                              <span className="px-1.5 py-0.5 bg-slate-100 text-slate-400 rounded text-[8px] font-bold uppercase tracking-tight">Inativo</span>
+                            )}
+                          </div>
                           <div className="text-xs text-slate-500">{emp.cpf}</div>
                         </div>
                       </div>
@@ -699,6 +786,17 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
                     onChange={(e) => setEditingEmployee(prev => ({ ...prev, cpf: maskCPF(e.target.value) }))}
                     className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500"
                   />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Status *</label>
+                  <select
+                    value={editingEmployee?.status || 'Ativo'}
+                    onChange={(e) => setEditingEmployee(prev => ({ ...prev, status: e.target.value as any }))}
+                    className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    <option value="Ativo">Ativo</option>
+                    <option value="Inativo">Inativo</option>
+                  </select>
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Regime *</label>

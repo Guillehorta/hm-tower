@@ -104,6 +104,22 @@
         "endDateReal": { "type": "string" }
       },
       "required": ["id", "projectId", "servicePath"]
+    },
+    "WeatherLog": {
+      "title": "Registro de Clima",
+      "description": "Histórico de tempo ocorrido por obra.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "projectId": { "type": "string" },
+        "date": { "type": "string", "description": "YYYY-MM-DD" },
+        "morning": { "type": "object" },
+        "afternoon": { "type": "object" },
+        "night": { "type": "object" },
+        "precipitation": { "type": "number", "description": "Total mm para o dia" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "projectId", "date"]
     }
   },
   "firestore": {
@@ -134,6 +150,10 @@
     "/executions/{executionId}": {
       "schema": "ServiceExecution",
       "description": "Acompanhamento de serviços e qualidade."
+    },
+    "/weatherlogs/{logId}": {
+      "schema": "WeatherLog",
+      "description": "Histórico climático por obra."
     }
   }
 }

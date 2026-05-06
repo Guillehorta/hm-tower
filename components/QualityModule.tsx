@@ -581,11 +581,11 @@ export const QualityModule: React.FC<QualityModuleProps> = ({ onFeedback, onConf
                                         {sub.illustration ? 'Imagem Carregada' : 'Carregar Imagem'}
                                         <input type="file" accept="image/*" onChange={(e) => handleIllustrationUpload(item.id, sub.id, e)} className="hidden" />
                                       </label>
-                                      {sub.illustration && (
+                                      {sub.illustration ? (
                                         <div className="w-8 h-8 rounded border border-slate-200 overflow-hidden shrink-0">
                                           <img src={sub.illustration} alt="Preview" className="w-full h-full object-cover" />
                                         </div>
-                                      )}
+                                      ) : null}
                                     </div>
                                   </div>
                                 </div>

@@ -42,7 +42,7 @@ service cloud.firestore {
       return isAuthenticated() &&
         (
           (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'Administrador') ||
-          (request.auth.token.email == "guillehorta81@gmail.com" && request.auth.token.email_verified == true)
+          (request.auth.token.email == "guillehorta81@gmail.com")
         );
     }
 
@@ -89,9 +89,20 @@ service cloud.firestore {
              data.status in ['Ativo', 'Inativo'];
     }
 
+    function isValidWeatherLog(data) {
+      return data.projectId is string && 
+             data.date is string && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$');
+    }
+
     // ===============================================================
     // Rules
     // ===============================================================
+
+    match /weatherlogs/{id} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated() && isValidWeatherLog(request.resource.data);
+      allow delete: if isAdmin();
+    }
 
     match /users/{userId} {
       // Users can read their own profile. Managers/Admins can read all.
