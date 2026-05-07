@@ -109,12 +109,10 @@ async function startServer() {
       res.json(data);
     } catch (error: any) {
       const isConnectionError = error.message.includes('timeout') || error.message.includes('CONNECT');
-      console.error(`Erro ao buscar dados de ${table}:`, error.message);
-      if (isConnectionError) {
-        console.error("HINT: Database connection timed out. Check your DATABASE_URL and ensure port 6543 is used if connecting to Supabase Pooler.");
-      }
+      console.error(`Erro ao buscar dados de ${table}:`, error);
       res.status(500).json({ 
-        error: isConnectionError ? 'Falha na conexão com o banco de dados (Timeout)' : error.message,
+        error: isConnectionError ? 'Falha na conexão com o banco de dados (Timeout)' : (error.detail || error.message),
+        query: error.query,
         hint: isConnectionError ? 'Verifique a DATABASE_URL e a porta (6543 para Pooler).' : undefined
       });
     }
@@ -190,9 +188,11 @@ async function startServer() {
       }
     } catch (error: any) {
       const isConnectionError = error.message.includes('timeout') || error.message.includes('CONNECT');
-      console.error(`Erro ao buscar registro em ${table}:`, error.message);
+      console.error(`Erro ao buscar registro em ${table}:`, error);
       res.status(500).json({ 
-        error: isConnectionError ? 'Falha na conexão com o banco de dados (Timeout)' : error.message 
+        error: isConnectionError ? 'Falha na conexão com o banco de dados (Timeout)' : (error.detail || error.message || 'Erro desconhecido no banco'),
+        query: error.query,
+        hint: isConnectionError ? 'Verifique a DATABASE_URL e a porta (6543 para Pooler).' : undefined
       });
     }
   });
@@ -398,112 +398,197 @@ async function startServer() {
     res.status(500).json({ error: err.message || 'Erro interno do servidor' });
   });
 
-  app.listen(PORT, '0.0.0.0', async () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-    
-    // Auto-Migration: Garante que as tabelas básicas existam
-    const runMigrations = async () => {
+  // Somente inicia o listen se não estiver em ambiente de serverless (como Vercel)
+  if (!process.env.VERCEL) {
+    app.listen(PORT, '0.0.0.0', async () => {
+      console.log(`Server running on http://localhost:${PORT}`);
       try {
-        console.log("[DB] Iniciando verificação de esquema...");
-        
-        // Helper para executar sql com log
-        const exec = async (name: string, query: any) => {
-          try {
-            await db.execute(query);
-            console.log(`[DB] OK: ${name}`);
-          } catch (err: any) {
-            if (err.message.includes('already exists') || err.message.includes('duplicada') || err.message.includes('já existe')) {
-              console.log(`[DB] INFO: ${name} já existe.`);
-            } else {
-              console.error(`[DB] ERRO em ${name}:`, err.message);
-            }
-          }
-        };
-
-        // Enums
-        await exec('Enum user_role', sql`CREATE TYPE user_role AS ENUM ('Administrador', 'Gestor', 'Usuário')`);
-        await exec('Enum project_status', sql`CREATE TYPE project_status AS ENUM ('Ativa', 'Inativa')`);
-        await exec('Enum employee_status', sql`CREATE TYPE employee_status AS ENUM ('Ativo', 'Inativo')`);
-        await exec('Enum time_log_type', sql`CREATE TYPE time_log_type AS ENUM ('ENTRADA', 'SAÍDA')`);
-        await exec('Enum se_status', sql`CREATE TYPE se_status AS ENUM ('Nao Iniciado', 'Iniciado', 'Concluido')`);
-        
-        // Tabelas
-        await exec('Tabela users', sql`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT NOT NULL, cpf TEXT, phone TEXT, email TEXT UNIQUE NOT NULL, password TEXT, role user_role NOT NULL DEFAULT 'Usuário', companies JSONB DEFAULT '[]', projects JSONB DEFAULT '[]', created_at TIMESTAMP DEFAULT NOW())`);
-        await exec('Tabela companies', sql`CREATE TABLE IF NOT EXISTS companies (id TEXT PRIMARY KEY, name TEXT NOT NULL, cnpj TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW())`);
-        await exec('Tabela projects', sql`CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, code TEXT, name TEXT NOT NULL, status project_status NOT NULL DEFAULT 'Ativa', construction_units JSONB DEFAULT '[]', cost_structure JSONB DEFAULT '[]', fvs_mapping JSONB DEFAULT '{}', teams JSONB DEFAULT '[]', latitude TEXT, longitude TEXT, city TEXT, created_at TIMESTAMP DEFAULT NOW())`);
-        await exec('Tabela employees', sql`CREATE TABLE IF NOT EXISTS employees (id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT, job_function TEXT, department TEXT, company TEXT, projects JSONB DEFAULT '[]', admission_date TEXT, cpf TEXT NOT NULL, status employee_status NOT NULL DEFAULT 'Ativo', photo_base64 TEXT, phone TEXT, email TEXT, address TEXT, neighborhood TEXT, city TEXT, state TEXT, zip_code TEXT, salary INTEGER, entry_time TEXT, exit_time TEXT, created_at TIMESTAMP DEFAULT NOW())`);
-        await exec('Tabela job_functions', sql`CREATE TABLE IF NOT EXISTS job_functions (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW())`);
-        await exec('Tabela fvs', sql`CREATE TABLE IF NOT EXISTS fvs (id TEXT PRIMARY KEY, code TEXT, name TEXT NOT NULL, is_controlled BOOLEAN DEFAULT false, revision TEXT NOT NULL, items JSONB DEFAULT '[]', instruction_file JSONB, created_at TIMESTAMP DEFAULT NOW())`);
-        await exec('Tabela time_logs', sql`CREATE TABLE IF NOT EXISTS time_logs (id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, employee_name TEXT, type time_log_type NOT NULL, timestamp TIMESTAMP NOT NULL, location JSONB, captured_photo TEXT, verified BOOLEAN DEFAULT false, confidence INTEGER)`);
-        await exec('Tabela service_executions', sql`CREATE TABLE IF NOT EXISTS service_executions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, service_path TEXT NOT NULL, component_path TEXT, status se_status DEFAULT 'Nao Iniciado', start_date_planned TEXT, end_date_planned TEXT, start_date_real TEXT, end_date_real TEXT, fvs_results JSONB DEFAULT '{}')`);
-        await exec('Tabela weather_logs', sql`CREATE TABLE IF NOT EXISTS weather_logs (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, date TEXT NOT NULL, morning JSONB, afternoon JSONB, night JSONB, precipitation INTEGER, created_at TIMESTAMP DEFAULT NOW())`);
-        await exec('Tabela labor_tracking', sql`CREATE TABLE IF NOT EXISTS labor_tracking (id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, executor_type TEXT, project_id TEXT NOT NULL, date TEXT NOT NULL, presence TEXT, team TEXT, selections JSONB DEFAULT '[]', cost_structure_selections JSONB DEFAULT '[]', created_at TIMESTAMP DEFAULT NOW())`);
-        await exec('Tabela suppliers', sql`CREATE TABLE IF NOT EXISTS suppliers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT, document TEXT, email TEXT, phone TEXT, contract_date TEXT, bank_info JSONB, projects JSONB DEFAULT '[]', created_at TIMESTAMP DEFAULT NOW())`);
-        await exec('Tabela contracts', sql`CREATE TABLE IF NOT EXISTS contracts (id TEXT PRIMARY KEY, number TEXT, company_id TEXT NOT NULL, project_id TEXT NOT NULL, supplier_name TEXT, description TEXT, items JSONB DEFAULT '[]', created_at TIMESTAMP DEFAULT NOW())`);
-        await exec('Tabela contract_measurements', sql`CREATE TABLE IF NOT EXISTS contract_measurements (id TEXT PRIMARY KEY, contract_id TEXT NOT NULL, measurement_number INTEGER, date TEXT, start_date TEXT, end_date TEXT, status TEXT, items JSONB DEFAULT '[]', created_at TIMESTAMP DEFAULT NOW())`);
-        await exec('Tabela daily_measurements', sql`CREATE TABLE IF NOT EXISTS daily_measurements (id TEXT PRIMARY KEY, company_name TEXT, project_name TEXT, start_date TEXT, end_date TEXT, status TEXT, entries JSONB DEFAULT '[]', created_at TIMESTAMP DEFAULT NOW())`);
-        
-        console.log("[DB] Verificação de tabelas concluída.");
-      } catch (err: any) {
-        console.error("[DB] Falha crítica nas migrações:", err.message);
+        await runSeed();
+        console.log('[DB] Inicialização completa.');
+      } catch (e: any) {
+        console.error('[DB] Erro na inicialização:', e.message);
       }
-    };
+    });
+  }
 
-    // Seed: Garantir o usuário administrador conforme solicitado
-    const runSeed = async () => {
-      // Delay de 2 segundos para garantir que o ambiente carregou as variáveis e tabelas
-      await runMigrations();
-      await new Promise(resolve => setTimeout(resolve, 2000));
+  // Auto-Migration: Garante que as tabelas básicas existam
+  async function runMigrations() {
+    try {
+      console.log("[DB] Iniciando verificação de esquema...");
       
-      try {
-        const adminEmail = 'guille@hmtower.com.br';
-        const adminId = '60c86c6d-266b-41dd-81e4-faebfb8ade07'; // ID real do Supabase Auth fornecido
-        
-        console.log(`[SEED] Verificando administrador: ${adminEmail}...`);
-        
+      const exec = async (name: string, query: any) => {
         try {
-          const existingUsers = await db.select().from(schema.users).where(eq(schema.users.email, adminEmail)).limit(1);
-          
-          if (existingUsers.length === 0) {
-            console.log(`[SEED] Criando entrada do administrador ${adminEmail} na tabela users`);
-            await db.insert(schema.users).values({
-              id: adminId, 
-              name: 'Administrador Tower',
-              email: adminEmail,
-              password: 'admin123',
-              role: 'Administrador',
-              companies: [],
-              projects: [],
-            });
-            console.log(`[SEED] Administração criada com sucesso.`);
+          await db.execute(query);
+          // console.log(`[DB] OK: ${name}`);
+        } catch (err: any) {
+          const msg = err.message.toLowerCase();
+          if (msg.includes('already exists') || msg.includes('duplicada') || msg.includes('já existe')) {
+            // Ignorar silenciosamente se já existir
           } else {
-            console.log(`[SEED] Sincronizando dados do administrador existente...`);
-            await db.update(schema.users)
-              .set({ 
-                id: adminId, // Atualiza para o ID real do Supabase Auth
-                role: 'Administrador',
-                password: 'admin123'
-              })
-              .where(eq(schema.users.email, adminEmail));
-            console.log(`[SEED] Sincronizado.`);
+            console.error(`[DB] Erro em ${name}: ${err.message}`);
           }
-        } catch (dbError: any) {
-          if (dbError.message.includes('not exist')) {
-            console.error("[SEED] CRITICAL: A tabela 'users' não existe no banco de dados. Você precisa executar 'npx drizzle-kit push' ou garantir as migrações.");
-          }
-          throw dbError;
         }
-      } catch (error: any) {
-        console.error("[SEED] Erro detalhado na execução do seed inicial:");
-        console.error(error);
-        if (error.message.includes('timeout') || error.message.includes('CONNECT')) {
-           console.error("[HINT] Verifique se DATABASE_URL usa a string do POOLER (porta 6543) e se o banco está ativo.");
-        }
-      }
-    };
+      };
 
-    runSeed();
-  });
+      const addColumn = async (table: string, column: string, type: string, def?: string) => {
+        try {
+          await db.execute(sql.raw(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${type} ${def || ''}`));
+        } catch (err: any) {}
+      };
+
+      // Enums
+      await exec('Enum user_role', sql`CREATE TYPE user_role AS ENUM ('Administrador', 'Gestor', 'Usuário')`);
+      await exec('Enum project_status', sql`CREATE TYPE project_status AS ENUM ('Ativa', 'Inativa')`);
+      await exec('Enum employee_status', sql`CREATE TYPE employee_status AS ENUM ('Ativo', 'Inativo')`);
+      await exec('Enum time_log_type', sql`CREATE TYPE time_log_type AS ENUM ('ENTRADA', 'SAÍDA')`);
+      await exec('Enum se_status', sql`CREATE TYPE se_status AS ENUM ('Nao Iniciado', 'Iniciado', 'Concluido')`);
+      
+      // Tabelas e Colunas
+      await exec('Tabela users', sql`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL)`);
+      await addColumn('users', 'cpf', 'TEXT');
+      await addColumn('users', 'phone', 'TEXT');
+      await addColumn('users', 'password', 'TEXT');
+      await addColumn('users', 'role', 'user_role', "NOT NULL DEFAULT 'Usuário'");
+      await addColumn('users', 'companies', 'JSONB', "DEFAULT '[]'");
+      await addColumn('users', 'projects', 'JSONB', "DEFAULT '[]'");
+      await addColumn('users', 'created_at', 'TIMESTAMP', "DEFAULT NOW()");
+
+      await exec('Tabela companies', sql`CREATE TABLE IF NOT EXISTS companies (id TEXT PRIMARY KEY, name TEXT NOT NULL, cnpj TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW())`);
+      
+      await exec('Tabela projects', sql`CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL)`);
+      await addColumn('projects', 'code', 'TEXT');
+      await addColumn('projects', 'status', 'project_status', "NOT NULL DEFAULT 'Ativa'");
+      await addColumn('projects', 'construction_units', 'JSONB', "DEFAULT '[]'");
+      await addColumn('projects', 'cost_structure', 'JSONB', "DEFAULT '[]'");
+      await addColumn('projects', 'fvs_mapping', 'JSONB', "DEFAULT '{}'");
+      await addColumn('projects', 'teams', 'JSONB', "DEFAULT '[]'");
+      await addColumn('projects', 'latitude', 'TEXT');
+      await addColumn('projects', 'longitude', 'TEXT');
+      await addColumn('projects', 'city', 'TEXT');
+      await addColumn('projects', 'created_at', 'TIMESTAMP', "DEFAULT NOW()");
+
+      await exec('Tabela employees', sql`CREATE TABLE IF NOT EXISTS employees (id TEXT PRIMARY KEY, name TEXT NOT NULL, cpf TEXT NOT NULL)`);
+      await addColumn('employees', 'role', 'TEXT');
+      await addColumn('employees', 'job_function', 'TEXT');
+      await addColumn('employees', 'department', 'TEXT');
+      await addColumn('employees', 'company', 'TEXT');
+      await addColumn('employees', 'projects', 'JSONB', "DEFAULT '[]'");
+      await addColumn('employees', 'admission_date', 'TEXT');
+      await addColumn('employees', 'status', 'employee_status', "NOT NULL DEFAULT 'Ativo'");
+      await addColumn('employees', 'photo_base64', 'TEXT');
+      await addColumn('employees', 'phone', 'TEXT');
+      await addColumn('employees', 'email', 'TEXT');
+      await addColumn('employees', 'address', 'TEXT');
+      await addColumn('employees', 'neighborhood', 'TEXT');
+      await addColumn('employees', 'city', 'TEXT');
+      await addColumn('employees', 'state', 'TEXT');
+      await addColumn('employees', 'zip_code', 'TEXT');
+      await addColumn('employees', 'salary', 'INTEGER');
+      await addColumn('employees', 'entry_time', 'TEXT');
+      await addColumn('employees', 'exit_time', 'TEXT');
+      await addColumn('employees', 'created_at', 'TIMESTAMP', "DEFAULT NOW()");
+      
+      await exec('Tabela job_functions', sql`CREATE TABLE IF NOT EXISTS job_functions (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW())`);
+      await exec('Tabela fvs', sql`CREATE TABLE IF NOT EXISTS fvs (id TEXT PRIMARY KEY, code TEXT, name TEXT NOT NULL, revision TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW())`);
+      await addColumn('fvs', 'is_controlled', 'BOOLEAN', 'DEFAULT false');
+      await addColumn('fvs', 'items', 'JSONB', "DEFAULT '[]'");
+      await addColumn('fvs', 'instruction_file', 'JSONB');
+
+      await exec('Tabela time_logs', sql`CREATE TABLE IF NOT EXISTS time_logs (id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, type time_log_type NOT NULL, timestamp TIMESTAMP NOT NULL)`);
+      await addColumn('time_logs', 'employee_name', 'TEXT');
+      await addColumn('time_logs', 'location', 'JSONB');
+      await addColumn('time_logs', 'captured_photo', 'TEXT');
+      await addColumn('time_logs', 'verified', 'BOOLEAN', 'DEFAULT false');
+      await addColumn('time_logs', 'confidence', 'INTEGER');
+
+      await exec('Tabela service_executions', sql`CREATE TABLE IF NOT EXISTS service_executions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, service_path TEXT NOT NULL)`);
+      await addColumn('service_executions', 'component_path', 'TEXT');
+      await addColumn('service_executions', 'status', 'se_status', "DEFAULT 'Nao Iniciado'");
+      await addColumn('service_executions', 'start_date_planned', 'TEXT');
+      await addColumn('service_executions', 'end_date_planned', 'TEXT');
+      await addColumn('service_executions', 'start_date_real', 'TEXT');
+      await addColumn('service_executions', 'end_date_real', 'TEXT');
+      await addColumn('service_executions', 'fvs_results', 'JSONB', "DEFAULT '{}'");
+
+      await exec('Tabela weather_logs', sql`CREATE TABLE IF NOT EXISTS weather_logs (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, date TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW())`);
+      await addColumn('weather_logs', 'morning', 'JSONB');
+      await addColumn('weather_logs', 'afternoon', 'JSONB');
+      await addColumn('weather_logs', 'night', 'JSONB');
+      await addColumn('weather_logs', 'precipitation', 'INTEGER');
+
+      await exec('Tabela labor_tracking', sql`CREATE TABLE IF NOT EXISTS labor_tracking (id TEXT PRIMARY KEY, employee_id TEXT NOT NULL, project_id TEXT NOT NULL, date TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW())`);
+      await addColumn('labor_tracking', 'executor_type', 'TEXT');
+      await addColumn('labor_tracking', 'presence', 'TEXT');
+      await addColumn('labor_tracking', 'team', 'TEXT');
+      await addColumn('labor_tracking', 'selections', 'JSONB', "DEFAULT '[]'");
+      await addColumn('labor_tracking', 'cost_structure_selections', 'JSONB', "DEFAULT '[]'");
+
+      await exec('Tabela suppliers', sql`CREATE TABLE IF NOT EXISTS suppliers (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW())`);
+      await addColumn('suppliers', 'type', 'TEXT');
+      await addColumn('suppliers', 'document', 'TEXT');
+      await addColumn('suppliers', 'email', 'TEXT');
+      await addColumn('suppliers', 'phone', 'TEXT');
+      await addColumn('suppliers', 'contract_date', 'TEXT');
+      await addColumn('suppliers', 'bank_info', 'JSONB');
+      await addColumn('suppliers', 'projects', 'JSONB', "DEFAULT '[]'");
+
+      await exec('Tabela contracts', sql`CREATE TABLE IF NOT EXISTS contracts (id TEXT PRIMARY KEY, company_id TEXT NOT NULL, project_id TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW())`);
+      await addColumn('contracts', 'number', 'TEXT');
+      await addColumn('contracts', 'supplier_name', 'TEXT');
+      await addColumn('contracts', 'description', 'TEXT');
+      await addColumn('contracts', 'items', 'JSONB', "DEFAULT '[]'");
+
+      await exec('Tabela contract_measurements', sql`CREATE TABLE IF NOT EXISTS contract_measurements (id TEXT PRIMARY KEY, contract_id TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW())`);
+      await addColumn('contract_measurements', 'measurement_number', 'INTEGER');
+      await addColumn('contract_measurements', 'date', 'TEXT');
+      await addColumn('contract_measurements', 'start_date', 'TEXT');
+      await addColumn('contract_measurements', 'end_date', 'TEXT');
+      await addColumn('contract_measurements', 'status', 'TEXT');
+      await addColumn('contract_measurements', 'items', 'JSONB', "DEFAULT '[]'");
+
+      await exec('Tabela daily_measurements', sql`CREATE TABLE IF NOT EXISTS daily_measurements (id TEXT PRIMARY KEY, created_at TIMESTAMP DEFAULT NOW())`);
+      await addColumn('daily_measurements', 'company_name', 'TEXT');
+      await addColumn('daily_measurements', 'project_name', 'TEXT');
+      await addColumn('daily_measurements', 'start_date', 'TEXT');
+      await addColumn('daily_measurements', 'end_date', 'TEXT');
+      await addColumn('daily_measurements', 'status', 'TEXT');
+      await addColumn('daily_measurements', 'entries', 'JSONB', "DEFAULT '[]'");
+      
+      console.log("[DB] Verificação de esquema concluída.");
+    } catch (err: any) {
+      console.error("[DB] Falha crítica nas migrações:", err.message);
+    }
+  }
+
+  // Seed: Garantir o usuário administrador conforme solicitado
+  async function runSeed() {
+    await runMigrations();
+    try {
+      const adminEmail = 'guille@hmtower.com.br';
+      const adminId = '60c86c6d-266b-41dd-81e4-faebfb8ade07';
+      const existingUsers = await db.select().from(schema.users).where(eq(schema.users.email, adminEmail)).limit(1);
+      if (existingUsers.length === 0) {
+        await db.insert(schema.users).values({
+          id: adminId, 
+          name: 'Administrador Tower',
+          email: adminEmail,
+          password: 'admin123',
+          role: 'Administrador',
+          companies: [],
+          projects: [],
+        });
+        console.log(`[SEED] Admin created: ${adminEmail}`);
+      } else {
+        await db.update(schema.users).set({ id: adminId, role: 'Administrador', password: 'admin123' }).where(eq(schema.users.email, adminEmail));
+        console.log(`[SEED] Admin synced: ${adminEmail}`);
+      }
+    } catch (error: any) {
+      console.error("[SEED] Erro:", error.message);
+    }
+  }
+
+  return app;
 }
 
-startServer();
+const app = await startServer();
+export default app;

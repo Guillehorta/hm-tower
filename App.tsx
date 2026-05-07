@@ -183,6 +183,12 @@ const App: React.FC = () => {
     const unsubWeather = storageService.subscribeWeatherLogs(setWeatherLogs);
     const unsubTrackings = storageService.subscribeLaborTrackings(setTrackings);
 
+    // Admin only data
+    let unsubUsers = () => {};
+    if (currentUser?.role === UserRole.ADMIN) {
+      unsubUsers = storageService.subscribeUsers(setUsers);
+    }
+
     // Manager+ only data
     let unsubSuppliers = () => {};
     let unsubContracts = () => {};
@@ -206,6 +212,7 @@ const App: React.FC = () => {
       unsubJobFunctions();
       unsubWeather();
       unsubTrackings();
+      unsubUsers();
       if (isManager) {
         unsubSuppliers();
         unsubContracts();
@@ -573,7 +580,7 @@ const handleLogin = async () => {
     }
   };
 
-  const handleCreateUser = () => {
+  const handleCreateUser = async () => {
     if (!newUserName || !newUserEmail || !newUserPassword || !newUserRole || !newUserCPF) {
       setFeedback({ type: 'error', msg: "Preencha os campos obrigatórios." });
       return;
@@ -592,22 +599,64 @@ const handleLogin = async () => {
       createdAt: Date.now()
     };
 
-    storageService.saveUser(newUser);
-    setFeedback({ type: 'success', msg: editingUserId ? "Usuário atualizado com sucesso!" : "Usuário cadastrado com sucesso!" });
-    
-    // Reset form
-    setNewUserName('');
-    setNewUserCPF('');
-    setNewUserPhone('');
-    setNewUserEmail('');
-    setNewUserPassword('');
-    setNewUserCompanies([]);
-    setNewUserProjects([]);
-    setNewUserRole(UserRole.USER);
-    setEditingUserId(null);
-    
-    setView('users');
+    try {
+      await storageService.saveUser(newUser);
+      setUsers(prev => {
+        const index = prev.findIndex(u => u.id === newUser.id);
+        if (index >= 0) {
+          const updated = [...prev];
+          updated[index] = newUser;
+          return updated;
+        }
+        return [...prev, newUser];
+      });
+      setFeedback({ type: 'success', msg: editingUserId ? "Usuário atualizado com sucesso!" : "Usuário cadastrado com sucesso!" });
+      
+      // Reset form
+      setNewUserName('');
+      setNewUserCPF('');
+      setNewUserPhone('');
+      setNewUserEmail('');
+      setNewUserPassword('');
+      setNewUserCompanies([]);
+      setNewUserProjects([]);
+      setNewUserRole(UserRole.USER);
+      setEditingUserId(null);
+      
+      setView('users');
+    } catch (e: any) {
+      setFeedback({ type: 'error', msg: `Erro ao salvar usuário: ${e.message}` });
+    }
     clearFeedback();
+  };
+
+  const handleDeleteUser = async (id: string) => {
+    if (id === currentUser?.id) {
+      setFeedback({ type: 'error', msg: "Você não pode excluir seu próprio usuário." });
+      return;
+    }
+
+    if (id === '60c86c6d-266b-41dd-81e4-faebfb8ade07') {
+      setFeedback({ type: 'error', msg: "O administrador mestre não pode ser excluído." });
+      return;
+    }
+
+    setConfirmModal({
+      isOpen: true,
+      title: 'Excluir Usuário',
+      message: 'Tem certeza que deseja excluir permanentemente este usuário?',
+      onConfirm: async () => {
+        try {
+          await storageService.deleteUser(id);
+          setUsers(prev => prev.filter(u => u.id !== id));
+          setFeedback({ type: 'success', msg: "Usuário excluído com sucesso!" });
+          setConfirmModal(prev => ({ ...prev, isOpen: false }));
+        } catch (e: any) {
+          setFeedback({ type: 'error', msg: `Erro ao excluir: ${e.message}` });
+        }
+        clearFeedback();
+      }
+    });
   };
 
   const handleEditUser = (user: User) => {
@@ -1719,10 +1768,7 @@ const handleLogin = async () => {
                         </div>
                         <div className="flex gap-2">
                           <button onClick={() => handleEditUser(u)} className="w-8 h-8 rounded-full bg-white text-slate-300 hover:text-indigo-500 flex items-center justify-center transition shadow-sm"><i className="fas fa-edit text-xs"></i></button>
-                          <button onClick={async () => {
-                            if (u.id === 'admin-001') return;
-                            await storageService.deleteUser(u.id);
-                          }} className="w-8 h-8 rounded-full bg-white text-slate-300 hover:text-rose-500 flex items-center justify-center transition shadow-sm"><i className="fas fa-trash-alt text-xs"></i></button>
+                          <button onClick={() => handleDeleteUser(u.id)} className="w-8 h-8 rounded-full bg-white text-slate-300 hover:text-rose-500 flex items-center justify-center transition shadow-sm"><i className="fas fa-trash-alt text-xs"></i></button>
                         </div>
                       </div>
                     ))}

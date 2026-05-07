@@ -47,6 +47,7 @@ interface StorageService {
   subscribeLaborTrackings: (callback: (data: LaborTracking[]) => void) => () => void;
   subscribeLogs: (callback: (data: TimeLog[]) => void) => () => void;
   subscribeWeatherLogs: (callback: (data: WeatherLog[]) => void) => () => void;
+  subscribeUsers: (callback: (data: User[]) => void) => () => void;
   getProjects: () => Promise<Project[]>;
   getEmployees: () => Promise<Employee[]>;
   getSuppliers: () => Promise<Supplier[]>;
@@ -126,6 +127,7 @@ export const storageService: StorageService = {
   subscribeLaborTrackings: (cb) => createSubscription(KEYS.LABOR_TRACKING, cb),
   subscribeLogs: (cb) => createSubscription(KEYS.LOGS, cb),
   subscribeWeatherLogs: (cb) => createSubscription(KEYS.WEATHER_LOGS, cb),
+  subscribeUsers: (cb) => createSubscription(KEYS.USERS, cb),
 
   // CRUD Operations
   getProjects: () => apiFetch(`/${KEYS.PROJECTS}`),
