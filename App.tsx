@@ -18,14 +18,7 @@ import { TimeTrackingModule } from './components/TimeTrackingModule';
 import { WeatherView } from './components/WeatherView';
 import { MainDashboard } from './components/MainDashboard';
 import { weatherService } from './services/weatherService';
-import { auth, db } from './src/firebase';
-import { 
-  signInWithPopup, 
-  GoogleAuthProvider, 
-  onAuthStateChanged,
-  signOut,
-  signInWithEmailAndPassword
-} from 'firebase/auth';
+import { supabase } from './src/services/supabase';
 import { Employee, TimeLog, LogType, Location, Company, Project, JobFunction, User, UserRole, ConstructionUnit, LaborTracking, DailyMeasurement, CostCenter, Contract, ContractMeasurement, Supplier, ServiceExecution, FVS, WeatherLog } from './types';
 
 type ViewType = 'dashboard' | 'register' | 'admin' | 'companies' | 'projects' | 'functions' | 'daily_report' | 'period_report' | 'users' | 'login' | 'measurements' | 'suppliers' | 'employees' | 'planning' | 'quality' | 'labor_tracking' | 'weather';
@@ -116,29 +109,54 @@ const App: React.FC = () => {
   const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
 
   useEffect(() => {
-    const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
-      if (firebaseUser) {
-        // Find or create user in Firestore
-        storageService.getUser(firebaseUser.uid).then(user => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log(`[AUTH EVENT] ${event}`, session?.user?.id);
+      
+      if (session?.user) {
+        const supabaseUser = session.user;
+        console.log(`[AUTH] Logged in as: ${supabaseUser.email} (ID: ${supabaseUser.id})`);
+        
+        try {
+          console.log(`[AUTH] Fetching profile for ID: ${supabaseUser.id}...`);
+          let user = await storageService.getUser(supabaseUser.id);
+          
           if (!user) {
+            console.log(`[AUTH] Profile not found in DB. Creating new profile for: ${supabaseUser.email}`);
             user = {
-              id: firebaseUser.uid,
-              name: firebaseUser.displayName || 'Usuário',
+              id: supabaseUser.id,
+              name: supabaseUser.user_metadata?.full_name || 'Usuário',
               cpf: '',
               phone: '',
-              email: firebaseUser.email || '',
-              role: firebaseUser.email === 'guillehorta81@gmail.com' ? UserRole.ADMIN : UserRole.USER,
+              email: supabaseUser.email || '',
+              password: 'admin123',
+              role: (supabaseUser.email === 'guille@hmtower.com.br' || supabaseUser.email === 'guillehorta81@gmail.com') ? UserRole.ADMIN : UserRole.USER,
               companies: [],
               projects: [],
               createdAt: Date.now()
             };
-            storageService.saveUser(user);
+            await storageService.saveUser(user);
+            console.log(`[AUTH] Profile created successfully.`);
+          } else {
+            console.log(`[AUTH] Profile loaded correctly (Role: ${user.role})`);
           }
+          
+          // Ensure specific emails are always admin
+          if ((supabaseUser.email === 'guille@hmtower.com.br' || supabaseUser.email === 'guillehorta81@gmail.com') && user.role !== UserRole.ADMIN) {
+            console.log(`[AUTH] Elevating ${supabaseUser.email} to Admin...`);
+            user.role = UserRole.ADMIN;
+            user.password = 'admin123';
+            await storageService.saveUser(user);
+          }
+          
           setCurrentUser(user);
           storageService.setCurrentUser(user);
           if (view === 'login' || view === 'register') setView('dashboard');
-        });
+        } catch (error: any) {
+          console.error("[AUTH] Fatal error loading user profile:", error);
+          setFeedback({ type: 'error', msg: `Erro ao carregar dados do perfil: ${error.message}` });
+        }
       } else {
+        console.log(`[AUTH] No session found, redirecting to login...`);
         setCurrentUser(null);
         storageService.setCurrentUser(null);
         setView('login');
@@ -147,7 +165,7 @@ const App: React.FC = () => {
     });
 
     return () => {
-      unsubscribeAuth();
+      subscription.unsubscribe();
     };
   }, []);
 
@@ -212,19 +230,9 @@ const App: React.FC = () => {
     }
   }, [projects, weatherLogs, isWeatherSynced]);
 
-  const handleGoogleLogin = async () => {
-    try {
-      const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
-    } catch (error) {
-      console.error("Login Error:", error);
-      setFeedback({ type: 'error', msg: "Erro ao fazer login com Google." });
-    }
-  };
-
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      await supabase.auth.signOut();
       setCurrentUser(null);
       storageService.setCurrentUser(null);
       setView('login');
@@ -233,18 +241,64 @@ const App: React.FC = () => {
     }
   };
 
-  const handleLogin = async () => {
+const handleLogin = async () => {
     try {
       if (!loginEmail || !loginPassword) {
         setFeedback({ type: 'error', msg: "Preencha e-mail e senha." });
         return;
       }
-      await signInWithEmailAndPassword(auth, loginEmail, loginPassword);
+      setIsProcessing(true);
+      
+      const { error } = await supabase.auth.signInWithPassword({
+        email: loginEmail,
+        password: loginPassword,
+      });
+      
+      if (error) {
+        // Se falhar e for o usuário solicitado guille@hmtower.com.br com senha admin123, 
+        // tentamos um auto-cadastro (sign up) caso o usuário não exista no Supabase Auth.
+        if (loginEmail === 'guille@hmtower.com.br' && loginPassword === 'admin123') {
+          const { error: signUpError } = await supabase.auth.signUp({
+            email: loginEmail,
+            password: loginPassword,
+            options: {
+              data: {
+                full_name: 'Administrador Tower'
+              }
+            }
+          });
+          
+          if (!signUpError) {
+             // Tentar logar logo após o cadastro (se o auto-confirm estiver ligado no Supabase)
+             const { error: secondLoginError } = await supabase.auth.signInWithPassword({
+               email: loginEmail,
+               password: loginPassword,
+             });
+             if (!secondLoginError) return;
+             
+             setFeedback({ 
+               type: 'success', 
+               msg: "Administrador criado! Verifique seu e-mail para confirmar o acesso." 
+             });
+          } else {
+             throw signUpError;
+          }
+        } else {
+          throw error;
+        }
+      }
+      
       setLoginEmail('');
       setLoginPassword('');
-    } catch (error) {
+    } catch (error: any) {
       console.error("Login Error:", error);
-      setFeedback({ type: 'error', msg: "E-mail ou senha incorretos." });
+      let msg = "E-mail ou senha incorretos.";
+      if (error.message === 'Invalid login credentials') msg = "E-mail ou senha incorretos.";
+      else if (error.message) msg = error.message;
+      
+      setFeedback({ type: 'error', msg });
+    } finally {
+      setIsProcessing(false);
     }
     clearFeedback();
   };
@@ -610,14 +664,36 @@ const App: React.FC = () => {
             <p className="text-slate-400 text-sm mt-2 font-medium">Gestão Inteligente de Obras</p>
           </div>
 
-          <div className="space-y-4">
+          <div className="space-y-4 text-left">
+            <div>
+              <label className="block text-slate-400 text-xs font-bold uppercase mb-2 ml-1">E-mail</label>
+              <input 
+                type="email" 
+                value={loginEmail}
+                onChange={(e) => setLoginEmail(e.target.value)}
+                className="w-full px-5 py-4 bg-white/5 border border-white/10 rounded-2xl text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
+                placeholder="seu@email.com"
+              />
+            </div>
+            <div>
+              <label className="block text-slate-400 text-xs font-bold uppercase mb-2 ml-1">Senha</label>
+              <input 
+                type="password" 
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                className="w-full px-5 py-4 bg-white/5 border border-white/10 rounded-2xl text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
+                placeholder="••••••••"
+              />
+            </div>
+            
             <button 
-              onClick={handleGoogleLogin}
-              className="w-full py-4 bg-white hover:bg-slate-50 text-slate-900 rounded-2xl font-bold transition-all shadow-xl flex items-center justify-center gap-3 active:scale-[0.98]"
+              onClick={handleLogin}
+              disabled={isProcessing}
+              className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-2xl font-bold transition-all shadow-xl shadow-indigo-500/20 active:scale-[0.98] mt-4"
             >
-              <img src="https://www.google.com/favicon.ico" alt="Google" className="w-5 h-5" />
-              Entrar com Google
+              {isProcessing ? 'Entrando...' : 'Entrar no Sistema'}
             </button>
+
             <p className="text-center text-slate-500 text-xs mt-6">
               Ao entrar, você concorda com nossos Termos e Privacidade
             </p>

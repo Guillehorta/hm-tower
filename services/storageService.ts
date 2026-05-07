@@ -1,31 +1,5 @@
 
 import { Employee, TimeLog, Company, Project, JobFunction, User, LaborTracking, DailyMeasurement, Contract, ContractMeasurement, Supplier, ServiceExecution, FVS, WeatherLog } from '../types';
-import { db } from '../src/firebase';
-import { 
-  collection, 
-  doc, 
-  getDoc,
-  setDoc, 
-  deleteDoc, 
-  getDocs, 
-  query, 
-  orderBy,
-  onSnapshot
-} from 'firebase/firestore';
-
-enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
-}
-
-const handleFirestoreError = (error: unknown, operationType: OperationType, path: string | null) => {
-  console.error(`Firestore Error [${operationType}] at [${path}]:`, error);
-  throw error;
-};
 
 const KEYS = {
   EMPLOYEES: 'employees',
@@ -43,6 +17,21 @@ const KEYS = {
   SERVICE_EXECUTIONS: 'executions',
   FVS: 'fvs',
   WEATHER_LOGS: 'weatherlogs'
+};
+
+const apiFetch = async (endpoint: string, options: RequestInit = {}) => {
+  const response = await fetch(`/api/data${endpoint}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  });
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Erro na requisição');
+  }
+  return response.json();
 };
 
 interface StorageService {
@@ -101,257 +90,66 @@ interface StorageService {
   saveWeatherLog: (log: WeatherLog) => Promise<void>;
 }
 
-// Helper to remove/replace undefined values before saving to Firestore (recursive)
-const sanitizeForFirestore = (obj: any): any => {
-  if (obj === null || typeof obj !== 'object') return obj;
-  if (Array.isArray(obj)) return obj.map(sanitizeForFirestore);
-  
-  const result: any = {};
-  Object.keys(obj).forEach(key => {
-    const val = obj[key];
-    if (val === undefined) {
-      result[key] = null;
-    } else if (val !== null && typeof val === 'object' && !(val instanceof Date)) {
-      result[key] = sanitizeForFirestore(val);
-    } else {
-      result[key] = val;
+// Helper for generic subscription pattern using the API
+const createSubscription = (table: string, callback: (data: any) => void) => {
+  let active = true;
+  const fetchAndCallback = async () => {
+    try {
+      const data = await apiFetch(`/${table}`);
+      if (active) callback(data);
+    } catch (e) {
+      console.error(`Sub error for ${table}:`, e);
     }
-  });
-  return result;
+  };
+  
+  fetchAndCallback();
+  // Simplified: Poll every 30 seconds if real-time is not via SSE/WebSockets
+  const interval = setInterval(fetchAndCallback, 30000);
+
+  return () => {
+    active = false;
+    clearInterval(interval);
+  };
 };
 
 export const storageService: StorageService = {
   // Sync Listeners
-  subscribeFVS: (callback: (data: FVS[]) => void) => {
-    return onSnapshot(collection(db, KEYS.FVS), (snapshot) => {
-      callback(snapshot.docs.map(doc => doc.data() as FVS));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, KEYS.FVS));
-  },
-
-  subscribeProjects: (callback: (data: Project[]) => void) => {
-    return onSnapshot(collection(db, KEYS.PROJECTS), (snapshot) => {
-      callback(snapshot.docs.map(doc => doc.data() as Project));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, KEYS.PROJECTS));
-  },
-
-  subscribeEmployees: (callback: (data: Employee[]) => void) => {
-    return onSnapshot(collection(db, KEYS.EMPLOYEES), (snapshot) => {
-      callback(snapshot.docs.map(doc => doc.data() as Employee));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, KEYS.EMPLOYEES));
-  },
-
-  subscribeSuppliers: (callback: (data: Supplier[]) => void) => {
-    return onSnapshot(collection(db, KEYS.SUPPLIERS), (snapshot) => {
-      callback(snapshot.docs.map(doc => doc.data() as Supplier));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, KEYS.SUPPLIERS));
-  },
-
-  subscribeContracts: (callback: (data: Contract[]) => void) => {
-    return onSnapshot(collection(db, KEYS.CONTRACTS), (snapshot) => {
-      callback(snapshot.docs.map(doc => doc.data() as Contract));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, KEYS.CONTRACTS));
-  },
-
-  subscribeContractMeasurements: (callback: (data: ContractMeasurement[]) => void) => {
-    return onSnapshot(collection(db, KEYS.CONTRACT_MEASUREMENTS), (snapshot) => {
-      callback(snapshot.docs.map(doc => doc.data() as ContractMeasurement));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, KEYS.CONTRACT_MEASUREMENTS));
-  },
-
-  subscribeExecutions: (callback: (data: ServiceExecution[]) => void) => {
-    return onSnapshot(collection(db, KEYS.SERVICE_EXECUTIONS), (snapshot) => {
-      callback(snapshot.docs.map(doc => doc.data() as ServiceExecution));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, KEYS.SERVICE_EXECUTIONS));
-  },
-
-  subscribeCompanies: (callback: (data: Company[]) => void) => {
-    return onSnapshot(collection(db, KEYS.COMPANIES), (snapshot) => {
-      callback(snapshot.docs.map(doc => doc.data() as Company));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, KEYS.COMPANIES));
-  },
-
-  subscribeJobFunctions: (callback: (data: JobFunction[]) => void) => {
-    return onSnapshot(collection(db, KEYS.JOB_FUNCTIONS), (snapshot) => {
-      callback(snapshot.docs.map(doc => doc.data() as JobFunction));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, KEYS.JOB_FUNCTIONS));
-  },
-  
-  subscribeLaborTrackings: (callback: (data: LaborTracking[]) => void) => {
-    return onSnapshot(collection(db, KEYS.LABOR_TRACKING), (snapshot) => {
-      callback(snapshot.docs.map(doc => doc.data() as LaborTracking));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, KEYS.LABOR_TRACKING));
-  },
-
-  subscribeLogs: (callback: (data: TimeLog[]) => void) => {
-    return onSnapshot(collection(db, KEYS.LOGS), (snapshot) => {
-      callback(snapshot.docs.map(doc => doc.data() as TimeLog));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, KEYS.LOGS));
-  },
-
-  subscribeWeatherLogs: (callback: (data: WeatherLog[]) => void) => {
-    return onSnapshot(collection(db, KEYS.WEATHER_LOGS), (snapshot) => {
-      callback(snapshot.docs.map(doc => doc.data() as WeatherLog));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, KEYS.WEATHER_LOGS));
-  },
+  subscribeFVS: (cb) => createSubscription(KEYS.FVS, cb),
+  subscribeProjects: (cb) => createSubscription(KEYS.PROJECTS, cb),
+  subscribeEmployees: (cb) => createSubscription(KEYS.EMPLOYEES, cb),
+  subscribeSuppliers: (cb) => createSubscription(KEYS.SUPPLIERS, cb),
+  subscribeContracts: (cb) => createSubscription(KEYS.CONTRACTS, cb),
+  subscribeContractMeasurements: (cb) => createSubscription(KEYS.CONTRACT_MEASUREMENTS, cb),
+  subscribeExecutions: (cb) => createSubscription(KEYS.SERVICE_EXECUTIONS, cb),
+  subscribeCompanies: (cb) => createSubscription(KEYS.COMPANIES, cb),
+  subscribeJobFunctions: (cb) => createSubscription(KEYS.JOB_FUNCTIONS, cb),
+  subscribeLaborTrackings: (cb) => createSubscription(KEYS.LABOR_TRACKING, cb),
+  subscribeLogs: (cb) => createSubscription(KEYS.LOGS, cb),
+  subscribeWeatherLogs: (cb) => createSubscription(KEYS.WEATHER_LOGS, cb),
 
   // CRUD Operations
-  getProjects: async (): Promise<Project[]> => {
-    try {
-      const snap = await getDocs(collection(db, KEYS.PROJECTS));
-      return snap.docs.map(doc => doc.data() as Project);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, KEYS.PROJECTS);
-      return [];
-    }
-  },
+  getProjects: () => apiFetch(`/${KEYS.PROJECTS}`),
+  getEmployees: () => apiFetch(`/${KEYS.EMPLOYEES}`),
+  getSuppliers: () => apiFetch(`/${KEYS.SUPPLIERS}`),
+  saveSupplier: (supplier) => apiFetch(`/${KEYS.SUPPLIERS}`, { method: 'POST', body: JSON.stringify(supplier) }),
+  deleteSupplier: (id) => apiFetch(`/${KEYS.SUPPLIERS}`, { method: 'DELETE', body: JSON.stringify({ ids: [id] }) }),
+  
+  getContracts: () => apiFetch(`/${KEYS.CONTRACTS}`),
+  saveContract: (contract) => apiFetch(`/${KEYS.CONTRACTS}`, { method: 'POST', body: JSON.stringify(contract) }),
+  deleteContract: (id) => apiFetch(`/${KEYS.CONTRACTS}`, { method: 'DELETE', body: JSON.stringify({ ids: [id] }) }),
 
-  getEmployees: async (): Promise<Employee[]> => {
-    try {
-      const snap = await getDocs(collection(db, KEYS.EMPLOYEES));
-      return snap.docs.map(doc => doc.data() as Employee);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, KEYS.EMPLOYEES);
-      return [];
-    }
-  },
+  getContractMeasurements: () => apiFetch(`/${KEYS.CONTRACT_MEASUREMENTS}`),
+  saveContractMeasurement: (m) => apiFetch(`/${KEYS.CONTRACT_MEASUREMENTS}`, { method: 'POST', body: JSON.stringify(m) }),
+  deleteContractMeasurement: (id) => apiFetch(`/${KEYS.CONTRACT_MEASUREMENTS}`, { method: 'DELETE', body: JSON.stringify({ ids: [id] }) }),
 
-  getSuppliers: async (): Promise<Supplier[]> => {
-    try {
-      const snap = await getDocs(collection(db, KEYS.SUPPLIERS));
-      return snap.docs.map(doc => doc.data() as Supplier);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, KEYS.SUPPLIERS);
-      return [];
-    }
-  },
+  getFVS: () => apiFetch(`/${KEYS.FVS}`),
+  saveFVS: (fvs) => apiFetch(`/${KEYS.FVS}`, { method: 'POST', body: JSON.stringify(fvs) }),
+  deleteFVS: (id) => apiFetch(`/${KEYS.FVS}`, { method: 'DELETE', body: JSON.stringify({ ids: [id] }) }),
 
-  saveSupplier: async (supplier: Supplier) => {
-    try {
-      const sanitized = sanitizeForFirestore(supplier);
-      await setDoc(doc(db, KEYS.SUPPLIERS, supplier.id), sanitized);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `${KEYS.SUPPLIERS}/${supplier.id}`);
-    }
-  },
-
-  deleteSupplier: async (id: string) => {
-    try {
-      await deleteDoc(doc(db, KEYS.SUPPLIERS, id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `${KEYS.SUPPLIERS}/${id}`);
-    }
-  },
-
-  getContracts: async (): Promise<Contract[]> => {
-    try {
-      const snap = await getDocs(collection(db, KEYS.CONTRACTS));
-      return snap.docs.map(doc => doc.data() as Contract);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, KEYS.CONTRACTS);
-      return [];
-    }
-  },
-
-  saveContract: async (contract: Contract) => {
-    try {
-      const sanitized = sanitizeForFirestore(contract);
-      await setDoc(doc(db, KEYS.CONTRACTS, contract.id), sanitized);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `${KEYS.CONTRACTS}/${contract.id}`);
-    }
-  },
-
-  getContractMeasurements: async (): Promise<ContractMeasurement[]> => {
-    try {
-      const snap = await getDocs(collection(db, KEYS.CONTRACT_MEASUREMENTS));
-      return snap.docs.map(doc => doc.data() as ContractMeasurement);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, KEYS.CONTRACT_MEASUREMENTS);
-      return [];
-    }
-  },
-
-  saveContractMeasurement: async (m: ContractMeasurement) => {
-    try {
-      const sanitized = sanitizeForFirestore(m);
-      await setDoc(doc(db, KEYS.CONTRACT_MEASUREMENTS, m.id), sanitized);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `${KEYS.CONTRACT_MEASUREMENTS}/${m.id}`);
-    }
-  },
-
-  deleteContractMeasurement: async (id: string) => {
-    try {
-      await deleteDoc(doc(db, KEYS.CONTRACT_MEASUREMENTS, id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `${KEYS.CONTRACT_MEASUREMENTS}/${id}`);
-    }
-  },
-  getFVS: async (): Promise<FVS[]> => {
-    try {
-      const snap = await getDocs(collection(db, KEYS.FVS));
-      return snap.docs.map(doc => doc.data() as FVS);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, KEYS.FVS);
-      return [];
-    }
-  },
-
-  saveFVS: async (fvs: FVS) => {
-    try {
-      const sanitized = sanitizeForFirestore(fvs);
-      await setDoc(doc(db, KEYS.FVS, fvs.id), sanitized);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `${KEYS.FVS}/${fvs.id}`);
-    }
-  },
-
-  deleteFVS: async (id: string) => {
-    try {
-      await deleteDoc(doc(db, KEYS.FVS, id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `${KEYS.FVS}/${id}`);
-    }
-  },
-
-  getUsers: async (): Promise<User[]> => {
-    try {
-      const snap = await getDocs(collection(db, KEYS.USERS));
-      return snap.docs.map(doc => doc.data() as User);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, KEYS.USERS);
-      return [];
-    }
-  },
-
-  getUser: async (id: string): Promise<User | null> => {
-    try {
-      const docRef = doc(db, KEYS.USERS, id);
-      const docSnap = await getDoc(docRef);
-      return docSnap.exists() ? (docSnap.data() as User) : null;
-    } catch (err) {
-      // Don't log error for 403 on getUser during login check if it's expected not to exist
-      // handleFirestoreError(err, OperationType.GET, `${KEYS.USERS}/${id}`);
-      return null;
-    }
-  },
-
-  saveUser: async (user: User) => {
-    try {
-      const sanitized = sanitizeForFirestore(user);
-      await setDoc(doc(db, KEYS.USERS, user.id), sanitized);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `${KEYS.USERS}/${user.id}`);
-    }
-  },
-
-  deleteUser: async (id: string) => {
-    try {
-      await deleteDoc(doc(db, KEYS.USERS, id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `${KEYS.USERS}/${id}`);
-    }
-  },
+  getUsers: () => apiFetch(`/${KEYS.USERS}`),
+  getUser: (id) => apiFetch(`/${KEYS.USERS}/${id}`),
+  saveUser: (user) => apiFetch(`/${KEYS.USERS}`, { method: 'POST', body: JSON.stringify(user) }),
+  deleteUser: (id) => apiFetch(`/${KEYS.USERS}`, { method: 'DELETE', body: JSON.stringify({ ids: [id] }) }),
 
   getCurrentUser: (): User | null => {
     const data = localStorage.getItem(KEYS.CURRENT_USER);
@@ -366,254 +164,34 @@ export const storageService: StorageService = {
     }
   },
 
-  saveCompany: async (company: Company) => {
-    try {
-      const sanitized = sanitizeForFirestore(company);
-      await setDoc(doc(db, KEYS.COMPANIES, company.id), sanitized);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `${KEYS.COMPANIES}/${company.id}`);
-    }
-  },
+  saveCompany: (company) => apiFetch(`/${KEYS.COMPANIES}`, { method: 'POST', body: JSON.stringify(company) }),
+  deleteCompany: (id) => apiFetch(`/${KEYS.COMPANIES}`, { method: 'DELETE', body: JSON.stringify({ ids: [id] }) }),
 
-  deleteCompany: async (id: string) => {
-    try {
-      await deleteDoc(doc(db, KEYS.COMPANIES, id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `${KEYS.COMPANIES}/${id}`);
-    }
-  },
+  saveJobFunction: (jf) => apiFetch(`/${KEYS.JOB_FUNCTIONS}`, { method: 'POST', body: JSON.stringify(jf) }),
+  deleteJobFunction: (id) => apiFetch(`/${KEYS.JOB_FUNCTIONS}`, { method: 'DELETE', body: JSON.stringify({ ids: [id] }) }),
 
-  saveJobFunction: async (jobFunction: JobFunction) => {
-    try {
-      const sanitized = sanitizeForFirestore(jobFunction);
-      await setDoc(doc(db, KEYS.JOB_FUNCTIONS, jobFunction.id), sanitized);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `${KEYS.JOB_FUNCTIONS}/${jobFunction.id}`);
-    }
-  },
+  getLaborTrackings: () => apiFetch(`/${KEYS.LABOR_TRACKING}`),
+  saveLaborTracking: (t) => apiFetch(`/${KEYS.LABOR_TRACKING}`, { method: 'POST', body: JSON.stringify(t) }),
+  saveLaborTrackings: (trackings) => apiFetch(`/${KEYS.LABOR_TRACKING}`, { method: 'POST', body: JSON.stringify(trackings) }),
+  deleteLaborTrackings: (ids) => apiFetch(`/${KEYS.LABOR_TRACKING}`, { method: 'DELETE', body: JSON.stringify({ ids }) }),
 
-  deleteJobFunction: async (id: string) => {
-    try {
-      await deleteDoc(doc(db, KEYS.JOB_FUNCTIONS, id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `${KEYS.JOB_FUNCTIONS}/${id}`);
-    }
-  },
+  getMeasurements: () => apiFetch(`/${KEYS.MEASUREMENTS}`),
+  saveMeasurement: (m) => apiFetch(`/${KEYS.MEASUREMENTS}`, { method: 'POST', body: JSON.stringify(m) }),
 
-  getLaborTrackings: async (): Promise<LaborTracking[]> => {
-    try {
-      const snap = await getDocs(collection(db, KEYS.LABOR_TRACKING));
-      return snap.docs.map(doc => doc.data() as LaborTracking);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, KEYS.LABOR_TRACKING);
-      return [];
-    }
-  },
+  saveProject: (p) => apiFetch(`/${KEYS.PROJECTS}`, { method: 'POST', body: JSON.stringify(p) }),
+  deleteProject: (id) => apiFetch(`/${KEYS.PROJECTS}`, { method: 'DELETE', body: JSON.stringify({ ids: [id] }) }),
 
-  saveLaborTracking: async (tracking: LaborTracking) => {
-    try {
-      const sanitized = sanitizeForFirestore(tracking);
-      await setDoc(doc(db, KEYS.LABOR_TRACKING, tracking.id), sanitized);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `${KEYS.LABOR_TRACKING}/${tracking.id}`);
-    }
-  },
+  saveEmployee: (emp) => apiFetch(`/${KEYS.EMPLOYEES}`, { method: 'POST', body: JSON.stringify(emp) }),
+  saveEmployees: (employees) => apiFetch(`/${KEYS.EMPLOYEES}`, { method: 'POST', body: JSON.stringify(employees) }),
+  deleteEmployee: (id) => apiFetch(`/${KEYS.EMPLOYEES}`, { method: 'DELETE', body: JSON.stringify({ ids: [id] }) }),
 
-  saveLaborTrackings: async (trackings: LaborTracking[]) => {
-    try {
-      const { writeBatch } = await import('firebase/firestore');
-      for (let i = 0; i < trackings.length; i += 500) {
-        const batch = writeBatch(db);
-        const chunk = trackings.slice(i, i + 500);
-        chunk.forEach(t => {
-          const sanitized = sanitizeForFirestore(t);
-          const docRef = doc(db, KEYS.LABOR_TRACKING, t.id);
-          batch.set(docRef, sanitized);
-        });
-        await batch.commit();
-      }
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, KEYS.LABOR_TRACKING);
-    }
-  },
+  saveLog: (log) => apiFetch(`/${KEYS.LOGS}`, { method: 'POST', body: JSON.stringify(log) }),
+  saveLogs: (logs) => apiFetch(`/${KEYS.LOGS}`, { method: 'POST', body: JSON.stringify(logs) }),
+  deleteLogs: (ids) => apiFetch(`/${KEYS.LOGS}`, { method: 'DELETE', body: JSON.stringify({ ids }) }),
 
-  deleteLaborTrackings: async (ids: string[]) => {
-    try {
-      const { writeBatch } = await import('firebase/firestore');
-      for (let i = 0; i < ids.length; i += 500) {
-        const batch = writeBatch(db);
-        const chunk = ids.slice(i, i + 500);
-        chunk.forEach(id => {
-          const docRef = doc(db, KEYS.LABOR_TRACKING, id);
-          batch.delete(docRef);
-        });
-        await batch.commit();
-      }
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, KEYS.LABOR_TRACKING);
-    }
-  },
+  saveServiceExecution: (ex) => apiFetch(`/${KEYS.SERVICE_EXECUTIONS}`, { method: 'POST', body: JSON.stringify(ex) }),
+  saveServiceExecutions: (exs) => apiFetch(`/${KEYS.SERVICE_EXECUTIONS}`, { method: 'POST', body: JSON.stringify(exs) }),
 
-  getMeasurements: async (): Promise<DailyMeasurement[]> => {
-    try {
-      const snap = await getDocs(collection(db, KEYS.MEASUREMENTS));
-      return snap.docs.map(doc => doc.data() as DailyMeasurement);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, KEYS.MEASUREMENTS);
-      return [];
-    }
-  },
-
-  saveMeasurement: async (m: DailyMeasurement) => {
-    try {
-      const sanitized = sanitizeForFirestore(m);
-      await setDoc(doc(db, KEYS.MEASUREMENTS, m.id), sanitized);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `${KEYS.MEASUREMENTS}/${m.id}`);
-    }
-  },
-
-  deleteContract: async (id: string) => {
-    try {
-      await deleteDoc(doc(db, KEYS.CONTRACTS, id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `${KEYS.CONTRACTS}/${id}`);
-    }
-  },
-
-  deleteProject: async (id: string) => {
-    try {
-      await deleteDoc(doc(db, KEYS.PROJECTS, id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `${KEYS.PROJECTS}/${id}`);
-    }
-  },
-
-  saveProject: async (project: Project) => {
-    try {
-      const sanitized = sanitizeForFirestore(project);
-      await setDoc(doc(db, KEYS.PROJECTS, project.id), sanitized);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `${KEYS.PROJECTS}/${project.id}`);
-    }
-  },
-
-  saveEmployee: async (employee: Employee) => {
-    try {
-      const sanitized = sanitizeForFirestore(employee);
-      await setDoc(doc(db, KEYS.EMPLOYEES, employee.id), sanitized);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `${KEYS.EMPLOYEES}/${employee.id}`);
-    }
-  },
-
-  saveEmployees: async (employees: Employee[]) => {
-    try {
-      const { writeBatch } = await import('firebase/firestore');
-      for (let i = 0; i < employees.length; i += 500) {
-        const batch = writeBatch(db);
-        const chunk = employees.slice(i, i + 500);
-        chunk.forEach(emp => {
-          const sanitized = sanitizeForFirestore(emp);
-          const docRef = doc(db, KEYS.EMPLOYEES, emp.id);
-          batch.set(docRef, sanitized);
-        });
-        await batch.commit();
-      }
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, KEYS.EMPLOYEES);
-    }
-  },
-
-  deleteEmployee: async (id: string) => {
-    try {
-      await deleteDoc(doc(db, KEYS.EMPLOYEES, id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `${KEYS.EMPLOYEES}/${id}`);
-    }
-  },
-
-  saveLog: async (log: TimeLog) => {
-    try {
-      const sanitized = sanitizeForFirestore(log);
-      await setDoc(doc(db, KEYS.LOGS, log.id), sanitized);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `${KEYS.LOGS}/${log.id}`);
-    }
-  },
-
-  saveLogs: async (logs: TimeLog[]) => {
-    try {
-      const { writeBatch } = await import('firebase/firestore');
-      // Firestore batches are limited to 500 operations
-      for (let i = 0; i < logs.length; i += 500) {
-        const batch = writeBatch(db);
-        const chunk = logs.slice(i, i + 500);
-        
-        chunk.forEach(log => {
-          const sanitized = sanitizeForFirestore(log);
-          const docRef = doc(db, KEYS.LOGS, log.id);
-          batch.set(docRef, sanitized);
-        });
-        
-        await batch.commit();
-      }
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, KEYS.LOGS);
-    }
-  },
-
-  deleteLogs: async (ids: string[]) => {
-    try {
-      const { writeBatch } = await import('firebase/firestore');
-      for (let i = 0; i < ids.length; i += 500) {
-        const batch = writeBatch(db);
-        const chunk = ids.slice(i, i + 500);
-        chunk.forEach(id => {
-          const docRef = doc(db, KEYS.LOGS, id);
-          batch.delete(docRef);
-        });
-        await batch.commit();
-      }
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, KEYS.LOGS);
-    }
-  },
-
-  saveServiceExecution: async (execution: ServiceExecution) => {
-    try {
-      const sanitized = sanitizeForFirestore(execution);
-      await setDoc(doc(db, KEYS.SERVICE_EXECUTIONS, execution.id), sanitized);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `${KEYS.SERVICE_EXECUTIONS}/${execution.id}`);
-    }
-  },
-
-  saveServiceExecutions: async (executions: ServiceExecution[]) => {
-    try {
-      const { writeBatch } = await import('firebase/firestore');
-      for (let i = 0; i < executions.length; i += 500) {
-        const batch = writeBatch(db);
-        const chunk = executions.slice(i, i + 500);
-        chunk.forEach(ex => {
-          const sanitized = sanitizeForFirestore(ex);
-          const docRef = doc(db, KEYS.SERVICE_EXECUTIONS, ex.id);
-          batch.set(docRef, sanitized);
-        });
-        await batch.commit();
-      }
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, KEYS.SERVICE_EXECUTIONS);
-    }
-  },
-
-  saveWeatherLog: async (log: WeatherLog) => {
-    try {
-      const sanitized = sanitizeForFirestore(log);
-      await setDoc(doc(db, KEYS.WEATHER_LOGS, log.id), sanitized);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `${KEYS.WEATHER_LOGS}/${log.id}`);
-    }
-  }
+  saveWeatherLog: (log) => apiFetch(`/${KEYS.WEATHER_LOGS}`, { method: 'POST', body: JSON.stringify(log) }),
 };
 
