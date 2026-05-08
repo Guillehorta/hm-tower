@@ -18,7 +18,14 @@ import { TimeTrackingModule } from './components/TimeTrackingModule';
 import { WeatherView } from './components/WeatherView';
 import { MainDashboard } from './components/MainDashboard';
 import { weatherService } from './services/weatherService';
-import { supabase } from './src/services/supabase';
+import { auth, db } from './src/firebase';
+import { 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  onAuthStateChanged,
+  signOut,
+  signInWithEmailAndPassword
+} from 'firebase/auth';
 import { Employee, TimeLog, LogType, Location, Company, Project, JobFunction, User, UserRole, ConstructionUnit, LaborTracking, DailyMeasurement, CostCenter, Contract, ContractMeasurement, Supplier, ServiceExecution, FVS, WeatherLog } from './types';
 
 type ViewType = 'dashboard' | 'register' | 'admin' | 'companies' | 'projects' | 'functions' | 'daily_report' | 'period_report' | 'users' | 'login' | 'measurements' | 'suppliers' | 'employees' | 'planning' | 'quality' | 'labor_tracking' | 'weather';
@@ -109,54 +116,29 @@ const App: React.FC = () => {
   const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
 
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      console.log(`[AUTH EVENT] ${event}`, session?.user?.id);
-      
-      if (session?.user) {
-        const supabaseUser = session.user;
-        console.log(`[AUTH] Logged in as: ${supabaseUser.email} (ID: ${supabaseUser.id})`);
-        
-        try {
-          console.log(`[AUTH] Fetching profile for ID: ${supabaseUser.id}...`);
-          let user = await storageService.getUser(supabaseUser.id);
-          
+    const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
+      if (firebaseUser) {
+        // Find or create user in Firestore
+        storageService.getUser(firebaseUser.uid).then(user => {
           if (!user) {
-            console.log(`[AUTH] Profile not found in DB. Creating new profile for: ${supabaseUser.email}`);
             user = {
-              id: supabaseUser.id,
-              name: supabaseUser.user_metadata?.full_name || 'Usuário',
+              id: firebaseUser.uid,
+              name: firebaseUser.displayName || 'Usuário',
               cpf: '',
               phone: '',
-              email: supabaseUser.email || '',
-              password: 'admin123',
-              role: (supabaseUser.email === 'guille@hmtower.com.br' || supabaseUser.email === 'guillehorta81@gmail.com') ? UserRole.ADMIN : UserRole.USER,
+              email: firebaseUser.email || '',
+              role: firebaseUser.email === 'guillehorta81@gmail.com' ? UserRole.ADMIN : UserRole.USER,
               companies: [],
               projects: [],
               createdAt: Date.now()
             };
-            await storageService.saveUser(user);
-            console.log(`[AUTH] Profile created successfully.`);
-          } else {
-            console.log(`[AUTH] Profile loaded correctly (Role: ${user.role})`);
+            storageService.saveUser(user);
           }
-          
-          // Ensure specific emails are always admin
-          if ((supabaseUser.email === 'guille@hmtower.com.br' || supabaseUser.email === 'guillehorta81@gmail.com') && user.role !== UserRole.ADMIN) {
-            console.log(`[AUTH] Elevating ${supabaseUser.email} to Admin...`);
-            user.role = UserRole.ADMIN;
-            user.password = 'admin123';
-            await storageService.saveUser(user);
-          }
-          
           setCurrentUser(user);
           storageService.setCurrentUser(user);
           if (view === 'login' || view === 'register') setView('dashboard');
-        } catch (error: any) {
-          console.error("[AUTH] Fatal error loading user profile:", error);
-          setFeedback({ type: 'error', msg: `Erro ao carregar dados do perfil: ${error.message}` });
-        }
+        });
       } else {
-        console.log(`[AUTH] No session found, redirecting to login...`);
         setCurrentUser(null);
         storageService.setCurrentUser(null);
         setView('login');
@@ -165,7 +147,7 @@ const App: React.FC = () => {
     });
 
     return () => {
-      subscription.unsubscribe();
+      unsubscribeAuth();
     };
   }, []);
 
@@ -182,12 +164,6 @@ const App: React.FC = () => {
     const unsubJobFunctions = storageService.subscribeJobFunctions(setJobFunctions);
     const unsubWeather = storageService.subscribeWeatherLogs(setWeatherLogs);
     const unsubTrackings = storageService.subscribeLaborTrackings(setTrackings);
-
-    // Admin only data
-    let unsubUsers = () => {};
-    if (currentUser?.role === UserRole.ADMIN) {
-      unsubUsers = storageService.subscribeUsers(setUsers);
-    }
 
     // Manager+ only data
     let unsubSuppliers = () => {};
@@ -212,7 +188,6 @@ const App: React.FC = () => {
       unsubJobFunctions();
       unsubWeather();
       unsubTrackings();
-      unsubUsers();
       if (isManager) {
         unsubSuppliers();
         unsubContracts();
@@ -237,9 +212,19 @@ const App: React.FC = () => {
     }
   }, [projects, weatherLogs, isWeatherSynced]);
 
+  const handleGoogleLogin = async () => {
+    try {
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
+    } catch (error) {
+      console.error("Login Error:", error);
+      setFeedback({ type: 'error', msg: "Erro ao fazer login com Google." });
+    }
+  };
+
   const handleLogout = async () => {
     try {
-      await supabase.auth.signOut();
+      await signOut(auth);
       setCurrentUser(null);
       storageService.setCurrentUser(null);
       setView('login');
@@ -248,64 +233,18 @@ const App: React.FC = () => {
     }
   };
 
-const handleLogin = async () => {
+  const handleLogin = async () => {
     try {
       if (!loginEmail || !loginPassword) {
         setFeedback({ type: 'error', msg: "Preencha e-mail e senha." });
         return;
       }
-      setIsProcessing(true);
-      
-      const { error } = await supabase.auth.signInWithPassword({
-        email: loginEmail,
-        password: loginPassword,
-      });
-      
-      if (error) {
-        // Se falhar e for o usuário solicitado guille@hmtower.com.br com senha admin123, 
-        // tentamos um auto-cadastro (sign up) caso o usuário não exista no Supabase Auth.
-        if (loginEmail === 'guille@hmtower.com.br' && loginPassword === 'admin123') {
-          const { error: signUpError } = await supabase.auth.signUp({
-            email: loginEmail,
-            password: loginPassword,
-            options: {
-              data: {
-                full_name: 'Administrador Tower'
-              }
-            }
-          });
-          
-          if (!signUpError) {
-             // Tentar logar logo após o cadastro (se o auto-confirm estiver ligado no Supabase)
-             const { error: secondLoginError } = await supabase.auth.signInWithPassword({
-               email: loginEmail,
-               password: loginPassword,
-             });
-             if (!secondLoginError) return;
-             
-             setFeedback({ 
-               type: 'success', 
-               msg: "Administrador criado! Verifique seu e-mail para confirmar o acesso." 
-             });
-          } else {
-             throw signUpError;
-          }
-        } else {
-          throw error;
-        }
-      }
-      
+      await signInWithEmailAndPassword(auth, loginEmail, loginPassword);
       setLoginEmail('');
       setLoginPassword('');
-    } catch (error: any) {
+    } catch (error) {
       console.error("Login Error:", error);
-      let msg = "E-mail ou senha incorretos.";
-      if (error.message === 'Invalid login credentials') msg = "E-mail ou senha incorretos.";
-      else if (error.message) msg = error.message;
-      
-      setFeedback({ type: 'error', msg });
-    } finally {
-      setIsProcessing(false);
+      setFeedback({ type: 'error', msg: "E-mail ou senha incorretos." });
     }
     clearFeedback();
   };
@@ -580,7 +519,7 @@ const handleLogin = async () => {
     }
   };
 
-  const handleCreateUser = async () => {
+  const handleCreateUser = () => {
     if (!newUserName || !newUserEmail || !newUserPassword || !newUserRole || !newUserCPF) {
       setFeedback({ type: 'error', msg: "Preencha os campos obrigatórios." });
       return;
@@ -599,64 +538,22 @@ const handleLogin = async () => {
       createdAt: Date.now()
     };
 
-    try {
-      await storageService.saveUser(newUser);
-      setUsers(prev => {
-        const index = prev.findIndex(u => u.id === newUser.id);
-        if (index >= 0) {
-          const updated = [...prev];
-          updated[index] = newUser;
-          return updated;
-        }
-        return [...prev, newUser];
-      });
-      setFeedback({ type: 'success', msg: editingUserId ? "Usuário atualizado com sucesso!" : "Usuário cadastrado com sucesso!" });
-      
-      // Reset form
-      setNewUserName('');
-      setNewUserCPF('');
-      setNewUserPhone('');
-      setNewUserEmail('');
-      setNewUserPassword('');
-      setNewUserCompanies([]);
-      setNewUserProjects([]);
-      setNewUserRole(UserRole.USER);
-      setEditingUserId(null);
-      
-      setView('users');
-    } catch (e: any) {
-      setFeedback({ type: 'error', msg: `Erro ao salvar usuário: ${e.message}` });
-    }
+    storageService.saveUser(newUser);
+    setFeedback({ type: 'success', msg: editingUserId ? "Usuário atualizado com sucesso!" : "Usuário cadastrado com sucesso!" });
+    
+    // Reset form
+    setNewUserName('');
+    setNewUserCPF('');
+    setNewUserPhone('');
+    setNewUserEmail('');
+    setNewUserPassword('');
+    setNewUserCompanies([]);
+    setNewUserProjects([]);
+    setNewUserRole(UserRole.USER);
+    setEditingUserId(null);
+    
+    setView('users');
     clearFeedback();
-  };
-
-  const handleDeleteUser = async (id: string) => {
-    if (id === currentUser?.id) {
-      setFeedback({ type: 'error', msg: "Você não pode excluir seu próprio usuário." });
-      return;
-    }
-
-    if (id === '60c86c6d-266b-41dd-81e4-faebfb8ade07') {
-      setFeedback({ type: 'error', msg: "O administrador mestre não pode ser excluído." });
-      return;
-    }
-
-    setConfirmModal({
-      isOpen: true,
-      title: 'Excluir Usuário',
-      message: 'Tem certeza que deseja excluir permanentemente este usuário?',
-      onConfirm: async () => {
-        try {
-          await storageService.deleteUser(id);
-          setUsers(prev => prev.filter(u => u.id !== id));
-          setFeedback({ type: 'success', msg: "Usuário excluído com sucesso!" });
-          setConfirmModal(prev => ({ ...prev, isOpen: false }));
-        } catch (e: any) {
-          setFeedback({ type: 'error', msg: `Erro ao excluir: ${e.message}` });
-        }
-        clearFeedback();
-      }
-    });
   };
 
   const handleEditUser = (user: User) => {
@@ -713,36 +610,14 @@ const handleLogin = async () => {
             <p className="text-slate-400 text-sm mt-2 font-medium">Gestão Inteligente de Obras</p>
           </div>
 
-          <div className="space-y-4 text-left">
-            <div>
-              <label className="block text-slate-400 text-xs font-bold uppercase mb-2 ml-1">E-mail</label>
-              <input 
-                type="email" 
-                value={loginEmail}
-                onChange={(e) => setLoginEmail(e.target.value)}
-                className="w-full px-5 py-4 bg-white/5 border border-white/10 rounded-2xl text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
-                placeholder="seu@email.com"
-              />
-            </div>
-            <div>
-              <label className="block text-slate-400 text-xs font-bold uppercase mb-2 ml-1">Senha</label>
-              <input 
-                type="password" 
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                className="w-full px-5 py-4 bg-white/5 border border-white/10 rounded-2xl text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
-                placeholder="••••••••"
-              />
-            </div>
-            
+          <div className="space-y-4">
             <button 
-              onClick={handleLogin}
-              disabled={isProcessing}
-              className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-2xl font-bold transition-all shadow-xl shadow-indigo-500/20 active:scale-[0.98] mt-4"
+              onClick={handleGoogleLogin}
+              className="w-full py-4 bg-white hover:bg-slate-50 text-slate-900 rounded-2xl font-bold transition-all shadow-xl flex items-center justify-center gap-3 active:scale-[0.98]"
             >
-              {isProcessing ? 'Entrando...' : 'Entrar no Sistema'}
+              <img src="https://www.google.com/favicon.ico" alt="Google" className="w-5 h-5" />
+              Entrar com Google
             </button>
-
             <p className="text-center text-slate-500 text-xs mt-6">
               Ao entrar, você concorda com nossos Termos e Privacidade
             </p>
@@ -1768,7 +1643,10 @@ const handleLogin = async () => {
                         </div>
                         <div className="flex gap-2">
                           <button onClick={() => handleEditUser(u)} className="w-8 h-8 rounded-full bg-white text-slate-300 hover:text-indigo-500 flex items-center justify-center transition shadow-sm"><i className="fas fa-edit text-xs"></i></button>
-                          <button onClick={() => handleDeleteUser(u.id)} className="w-8 h-8 rounded-full bg-white text-slate-300 hover:text-rose-500 flex items-center justify-center transition shadow-sm"><i className="fas fa-trash-alt text-xs"></i></button>
+                          <button onClick={async () => {
+                            if (u.id === 'admin-001') return;
+                            await storageService.deleteUser(u.id);
+                          }} className="w-8 h-8 rounded-full bg-white text-slate-300 hover:text-rose-500 flex items-center justify-center transition shadow-sm"><i className="fas fa-trash-alt text-xs"></i></button>
                         </div>
                       </div>
                     ))}
