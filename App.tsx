@@ -606,7 +606,7 @@ const App: React.FC = () => {
             <div className="w-20 h-20 bg-gradient-to-tr from-indigo-600 to-indigo-400 rounded-3xl flex items-center justify-center shadow-2xl shadow-indigo-500/40 transform -rotate-6 mb-6">
               <i className="fas fa-tower-observation text-4xl text-white"></i>
             </div>
-            <h1 className="text-3xl font-black text-white tracking-tight text-center">FacePoint Pro</h1>
+            <h1 className="text-3xl font-black text-white tracking-tight text-center">TowerUP Pro</h1>
             <p className="text-slate-400 text-sm mt-2 font-medium">Gestão Inteligente de Obras</p>
           </div>
 
@@ -642,9 +642,9 @@ const App: React.FC = () => {
 
         <div className={`p-6 flex items-center gap-3 ${isSidebarCollapsed ? 'justify-center px-0' : ''}`}>
           <div className="w-10 h-10 bg-indigo-500 rounded-lg flex items-center justify-center shrink-0">
-            <i className="fas fa-fingerprint text-xl"></i>
+            <i className="fas fa-tower-observation text-xl"></i>
           </div>
-          {!isSidebarCollapsed && <span className="text-xl font-bold tracking-tight truncate">FacePoint</span>}
+          {!isSidebarCollapsed && <span className="text-xl font-bold tracking-tight truncate">TowerUP</span>}
         </div>
         
         <nav className="flex-1 mt-4 px-4 space-y-1 overflow-y-auto overflow-x-hidden">

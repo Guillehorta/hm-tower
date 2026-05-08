@@ -50,7 +50,7 @@ async function startServer() {
         { 
           headers: { 
             'Content-Type': 'application/x-www-form-urlencoded',
-            'User-Agent': 'FacePoint/1.0'
+            'User-Agent': 'TowerUP/1.0'
           },
           timeout: 15000
         }
@@ -122,7 +122,7 @@ async function startServer() {
           {
             headers: { 
               'Content-Type': 'application/x-www-form-urlencoded',
-              'User-Agent': 'FacePoint/1.0'
+              'User-Agent': 'TowerUP/1.0'
             },
             timeout: 15000
           }
@@ -147,7 +147,7 @@ async function startServer() {
         {
           headers: { 
             Authorization: `Bearer ${token}`,
-            'User-Agent': 'FacePoint/1.0'
+            'User-Agent': 'TowerUP/1.0'
           },
           timeout: 20000
         }
@@ -177,7 +177,7 @@ async function startServer() {
           headers: {
             Authorization: `Bearer ${token}`,
             secullumidbancoselecionado: bankId.toString(),
-            'User-Agent': 'FacePoint/1.0'
+            'User-Agent': 'TowerUP/1.0'
           },
           timeout: 30000
         }
