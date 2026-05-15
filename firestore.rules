@@ -41,17 +41,31 @@ service cloud.firestore {
     function isAdmin() {
       return isAuthenticated() &&
         (
-          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'Administrador') ||
-          (request.auth.token.email == "guillehorta81@gmail.com")
+          request.auth.token.email == "guillehorta81@gmail.com" ||
+          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'Administrador')
         );
     }
 
-    function isManager() {
+    function isGestor() {
       return isAuthenticated() && 
-        (
-          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'Gestor') || 
-          isAdmin()
-        );
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'Gestor');
+    }
+
+    function isManager() {
+      return isAuthenticated() && (isAdmin() || isGestor());
+    }
+
+    function isUser() {
+      return isAuthenticated() && 
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'Usuário');
+    }
+
+    function isAnyRole() {
+       return isAuthenticated() && 
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)));
     }
 
     function hasRequiredFields(fields) {
@@ -74,7 +88,7 @@ service cloud.firestore {
 
     function isValidUser(data) {
       return data.name is string && data.name.size() > 0 &&
-             isValidEmail(data.email) &&
+             data.email is string && data.email.size() > 0 &&
              data.role in ['Administrador', 'Gestor', 'Usuário'];
     }
 
@@ -100,99 +114,97 @@ service cloud.firestore {
 
     match /weatherlogs/{id} {
       allow read: if isAuthenticated();
-      allow create, update: if isAuthenticated() && isValidWeatherLog(request.resource.data);
+      allow create, update: if isAnyRole() && isValidWeatherLog(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /users/{userId} {
-      // Users can read their own profile. Managers/Admins can read all.
       allow read: if isOwner(userId) || isManager();
       
-      // Allow creation of first-time profile
-      allow create: if isOwner(userId) && 
-                      isValidUser(request.resource.data) &&
-                      (request.resource.data.role == 'Usuário' || 
-                       (request.auth.token.email == "guillehorta81@gmail.com" && request.resource.data.role == 'Administrador'));
+      allow create: if (isOwner(userId) && isValidUser(request.resource.data)) ||
+                      (isAdmin() && isValidUser(request.resource.data)) ||
+                      (isGestor() && isValidUser(request.resource.data) && request.resource.data.role == 'Usuário');
       
-      // Allow updates: Admins can do anything, owners can update non-role fields
       allow update: if (isAdmin() && isValidUser(request.resource.data)) || 
                       (isOwner(userId) && 
                        isValidUser(request.resource.data) && 
-                       request.resource.data.role == resource.data.role);
+                       request.resource.data.role == resource.data.role) ||
+                      (isGestor() && isValidUser(request.resource.data) && resource.data.role == 'Usuário' && request.resource.data.role == 'Usuário');
                        
       allow delete: if isAdmin();
     }
 
     match /projects/{projectId} {
       allow read: if isAuthenticated();
-      // Managers and Admins can create/edit projects
-      allow create, update: if isManager() && isValidProject(request.resource.data);
+      allow create: if isAdmin() && isValidProject(request.resource.data);
+      allow update: if isManager() && isValidProject(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /contracts/{contractId} {
       allow read: if isAuthenticated();
-      allow create, update: if isManager();
-      allow delete: if isAdmin();
+      allow create, update: if isAnyRole();
+      allow delete: if isManager();
     }
 
     match /contractmeasurements/{id} {
       allow read: if isAuthenticated();
-      allow create, update: if isManager();
-      allow delete: if isAdmin();
+      allow create, update: if isAnyRole();
+      allow delete: if isManager();
     }
 
     match /suppliers/{id} {
       allow read: if isAuthenticated();
-      allow create, update: if isManager();
-      allow delete: if isAdmin();
+      allow create, update: if isAnyRole();
+      allow delete: if isManager();
     }
 
     match /employees/{employeeId} {
       allow read: if isAuthenticated();
-      allow create, update: if isManager() && isValidEmployee(request.resource.data);
-      allow delete: if isAdmin();
+      allow create, update: if isAnyRole() && isValidEmployee(request.resource.data);
+      allow delete: if isManager();
     }
 
     match /fvs/{fvsId} {
       allow read: if isAuthenticated();
-      allow create, update: if isManager();
-      allow delete: if isAdmin();
+      allow create, update: if isAnyRole();
+      allow delete: if isManager();
     }
 
     match /timelogs/{logId} {
-      allow read: if isManager();
-      // Creation restricted to authenticated logs (usually coming from the device)
+      allow read: if isAnyRole();
       allow create: if isAuthenticated(); 
-      allow update, delete: if isAdmin();
+      allow update, delete: if isManager();
     }
 
     match /executions/{executionId} {
       allow read: if isAuthenticated();
-      allow create, update: if isAuthenticated(); // Field workers might create/update via checklists
+      allow create, update: if isAuthenticated();
       allow delete: if isManager();
     }
     
     match /companies/{companyId} {
       allow read: if isAuthenticated();
-      allow write: if isAdmin();
+      allow create: if isAdmin();
+      allow update: if isManager();
+      allow delete: if isAdmin();
     }
 
     match /jobfunctions/{id} {
       allow read: if isAuthenticated();
-      allow write: if isManager();
+      allow write: if isAnyRole();
     }
 
     match /labortracking/{id} {
       allow read: if isAuthenticated();
-      allow create, update: if isAuthenticated();
+      allow create, update: if isAnyRole();
       allow delete: if isManager();
     }
 
     match /measurements/{id} {
       allow read: if isAuthenticated();
-      allow create, update: if isManager();
-      allow delete: if isAdmin();
+      allow create, update: if isAnyRole();
+      allow delete: if isManager();
     }
 
     // Default deny

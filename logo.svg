@@ -1,0 +1,8 @@
+<svg width="200" height="200" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="100" cy="80" r="60" fill="#4A4A4A"/>
+  <path d="M85 45L85 115L100 115L100 35L85 45Z" fill="#78B833"/>
+  <path d="M105 55L105 115L120 115L120 65L105 55Z" fill="#A0A0A0"/>
+  <path d="M70 70L70 115L80 115L80 75L70 70Z" fill="#5E8E26"/>
+  <text x="100" y="160" font-family="Arial, sans-serif" font-weight="bold" font-size="24" fill="#4A4A4A" text-anchor="middle">HM TOWER</text>
+  <text x="100" y="180" font-family="Arial, sans-serif" font-size="8" fill="#4A4A4A" text-anchor="middle">ENGENHARIA E CONSTRUÇÕES LTDA.</text>
+</svg>

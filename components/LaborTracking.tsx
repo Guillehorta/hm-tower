@@ -253,6 +253,18 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
     return res;
   };
 
+  const getExecutionStatus = (compPath: string) => {
+    if (!selectedProjectId || !currentServicePath) return null;
+    const ex = serviceExecutions.find(e => 
+      e.projectId === selectedProjectId && 
+      e.servicePath === currentServicePath && 
+      e.componentPath === compPath
+    );
+    if (ex?.endDateReal) return 'Concluído';
+    if (ex?.startDateReal) return 'Em andamento';
+    return null;
+  };
+
   const renderServiceSelector = () => {
     if (!project || !project.costStructure) return null;
 
@@ -381,17 +393,22 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
           {project.constructionUnits?.filter(cu => isLinked(cu.id, 'cu', cu)).map(cu => {
             const cuPath = cu.id;
             const isSelectable = linkedIds.length === 0 || linkedIds.includes(cu.id);
+            const status = getExecutionStatus(cuPath);
+            const isBlocked = !!status;
 
             return (
               <div key={cu.id} className="space-y-1">
                 {isSelectable ? (
                   <button
-                    onClick={() => { setCurrentComponentPath(cuPath); setIsComponentSelectorOpen(false); }}
-                    className={`text-left w-full px-2 py-1 rounded text-[10px] font-bold uppercase transition-colors ${
-                      currentComponentPath === cuPath ? 'bg-indigo-500 text-white' : 'text-indigo-600 hover:bg-slate-50'
+                    onClick={() => { if (!isBlocked) { setCurrentComponentPath(cuPath); setIsComponentSelectorOpen(false); } }}
+                    disabled={isBlocked}
+                    className={`text-left w-full px-2 py-1 rounded text-[10px] font-bold uppercase transition-colors flex justify-between items-center ${
+                      currentComponentPath === cuPath ? 'bg-indigo-500 text-white' : 
+                      isBlocked ? 'text-slate-300 cursor-not-allowed bg-slate-50' : 'text-indigo-600 hover:bg-slate-50'
                     }`}
                   >
-                    {cu.name}
+                    <span>{cu.name}</span>
+                    {status && <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded ${status === 'Concluído' ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>{status}</span>}
                   </button>
                 ) : (
                   <div className="font-bold text-[10px] text-indigo-600 uppercase px-2">{cu.name}</div>
@@ -401,17 +418,22 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
                   {cu.blocks?.filter(b => isLinked(b.id, 'b', b)).map(block => {
                     const bPath = `${cu.id}|${block.id}`;
                     const isBSelectable = linkedIds.length === 0 || linkedIds.includes(block.id);
+                    const bStatus = getExecutionStatus(bPath);
+                    const isBBlocked = !!bStatus;
 
                     return (
                       <div key={block.id} className="space-y-1">
                         {isBSelectable ? (
                           <button
-                            onClick={() => { setCurrentComponentPath(bPath); setIsComponentSelectorOpen(false); }}
-                            className={`text-left w-full px-2 py-1 rounded text-[10px] font-semibold italic transition-colors ${
-                              currentComponentPath === bPath ? 'bg-indigo-500 text-white' : 'text-slate-500 hover:bg-slate-50'
+                            onClick={() => { if (!isBBlocked) { setCurrentComponentPath(bPath); setIsComponentSelectorOpen(false); } }}
+                            disabled={isBBlocked}
+                            className={`text-left w-full px-2 py-1 rounded text-[10px] font-semibold italic transition-colors flex justify-between items-center ${
+                              currentComponentPath === bPath ? 'bg-indigo-500 text-white' : 
+                              isBBlocked ? 'text-slate-300 cursor-not-allowed bg-slate-50' : 'text-slate-500 hover:bg-slate-50'
                             }`}
                           >
-                            {block.name}
+                            <span>{block.name}</span>
+                            {bStatus && <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded ${bStatus === 'Concluído' ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>{bStatus}</span>}
                           </button>
                         ) : (
                           <div className="text-[10px] font-semibold text-slate-500 italic px-2">{block.name}</div>
@@ -421,17 +443,22 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
                           {block.floors?.filter(f => isLinked(f.id, 'f', f)).map(floor => {
                             const fPath = `${cu.id}|${block.id}|${floor.id}`;
                             const isFSelectable = linkedIds.length === 0 || linkedIds.includes(floor.id);
+                            const fStatus = getExecutionStatus(fPath);
+                            const isFBlocked = !!fStatus;
 
                             return (
                               <div key={floor.id} className="space-y-1">
                                 {isFSelectable ? (
                                   <button
-                                    onClick={() => { setCurrentComponentPath(fPath); setIsComponentSelectorOpen(false); }}
-                                    className={`text-left w-full px-2 py-1 rounded text-[10px] font-medium transition-colors ${
-                                      currentComponentPath === fPath ? 'bg-indigo-500 text-white' : 'text-slate-400 hover:bg-slate-50'
+                                    onClick={() => { if (!isFBlocked) { setCurrentComponentPath(fPath); setIsComponentSelectorOpen(false); } }}
+                                    disabled={isFBlocked}
+                                    className={`text-left w-full px-2 py-1 rounded text-[10px] font-medium transition-colors flex justify-between items-center ${
+                                      currentComponentPath === fPath ? 'bg-indigo-500 text-white' : 
+                                      isFBlocked ? 'text-slate-200 cursor-not-allowed bg-slate-50' : 'text-slate-400 hover:bg-slate-50'
                                     }`}
                                   >
-                                    {floor.name}
+                                    <span>{floor.name}</span>
+                                    {fStatus && <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded ${fStatus === 'Concluído' ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>{fStatus}</span>}
                                   </button>
                                 ) : (
                                   <div className="text-[10px] font-medium text-slate-400 px-2">{floor.name}</div>
@@ -440,15 +467,21 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
                                 <div className="pl-2 grid grid-cols-1 gap-1">
                                   {floor.units?.filter(u => isLinked(u.id, 'u', u)).map(unit => {
                                     const path = `${cu.id}|${block.id}|${floor.id}|${unit.id}`;
+                                    const uStatus = getExecutionStatus(path);
+                                    const isUBlocked = !!uStatus;
+
                                     return (
                                       <button
                                         key={unit.id}
-                                        onClick={() => { setCurrentComponentPath(path); setIsComponentSelectorOpen(false); }}
-                                        className={`text-left px-2 py-1 rounded text-[10px] transition-colors ${
-                                          currentComponentPath === path ? 'bg-indigo-500 text-white' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                                        onClick={() => { if (!isUBlocked) { setCurrentComponentPath(path); setIsComponentSelectorOpen(false); } }}
+                                        disabled={isUBlocked}
+                                        className={`text-left px-2 py-1 rounded text-[10px] transition-colors flex justify-between items-center ${
+                                          currentComponentPath === path ? 'bg-indigo-500 text-white' : 
+                                          isUBlocked ? 'text-slate-300 cursor-not-allowed bg-slate-50' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
                                         }`}
                                       >
-                                        {unit.name}
+                                        <span>{unit.name}</span>
+                                        {uStatus && <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded ${uStatus === 'Concluído' ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>{uStatus}</span>}
                                       </button>
                                     );
                                   })}

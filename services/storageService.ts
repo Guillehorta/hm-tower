@@ -10,6 +10,7 @@ import {
   getDocs, 
   query, 
   orderBy,
+  where,
   onSnapshot
 } from 'firebase/firestore';
 
@@ -58,6 +59,7 @@ interface StorageService {
   subscribeLaborTrackings: (callback: (data: LaborTracking[]) => void) => () => void;
   subscribeLogs: (callback: (data: TimeLog[]) => void) => () => void;
   subscribeWeatherLogs: (callback: (data: WeatherLog[]) => void) => () => void;
+  subscribeUsers: (callback: (data: User[]) => void) => () => void;
   getProjects: () => Promise<Project[]>;
   getEmployees: () => Promise<Employee[]>;
   getSuppliers: () => Promise<Supplier[]>;
@@ -74,6 +76,7 @@ interface StorageService {
   deleteFVS: (id: string) => Promise<void>;
   getUsers: () => Promise<User[]>;
   getUser: (id: string) => Promise<User | null>;
+  getUserByEmail: (email: string) => Promise<User | null>;
   saveUser: (user: User) => Promise<void>;
   deleteUser: (id: string) => Promise<void>;
   getCurrentUser: () => User | null;
@@ -192,6 +195,12 @@ export const storageService: StorageService = {
     return onSnapshot(collection(db, KEYS.WEATHER_LOGS), (snapshot) => {
       callback(snapshot.docs.map(doc => doc.data() as WeatherLog));
     }, (err) => handleFirestoreError(err, OperationType.LIST, KEYS.WEATHER_LOGS));
+  },
+
+  subscribeUsers: (callback: (data: User[]) => void) => {
+    return onSnapshot(collection(db, KEYS.USERS), (snapshot) => {
+      callback(snapshot.docs.map(doc => doc.data() as User));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, KEYS.USERS));
   },
 
   // CRUD Operations
@@ -332,6 +341,17 @@ export const storageService: StorageService = {
     } catch (err) {
       // Don't log error for 403 on getUser during login check if it's expected not to exist
       // handleFirestoreError(err, OperationType.GET, `${KEYS.USERS}/${id}`);
+      return null;
+    }
+  },
+
+  getUserByEmail: async (email: string): Promise<User | null> => {
+    try {
+      const q = query(collection(db, KEYS.USERS), where("email", "==", email));
+      const snap = await getDocs(q);
+      if (snap.empty) return null;
+      return snap.docs[0].data() as User;
+    } catch (err) {
       return null;
     }
   },

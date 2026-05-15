@@ -2,6 +2,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer, collection, onSnapshot, query, where, Timestamp } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
+export { firebaseConfig };
 
 // Initialize Firebase SDK
 const app = initializeApp(firebaseConfig);

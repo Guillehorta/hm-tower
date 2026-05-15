@@ -18,13 +18,16 @@ import { TimeTrackingModule } from './components/TimeTrackingModule';
 import { WeatherView } from './components/WeatherView';
 import { MainDashboard } from './components/MainDashboard';
 import { weatherService } from './services/weatherService';
-import { auth, db } from './src/firebase';
+import { initializeApp, getApps, getApp } from 'firebase/app';
+import { auth, db, firebaseConfig } from './src/firebase';
 import { 
   signInWithPopup, 
   GoogleAuthProvider, 
   onAuthStateChanged,
   signOut,
-  signInWithEmailAndPassword
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  getAuth
 } from 'firebase/auth';
 import { Employee, TimeLog, LogType, Location, Company, Project, JobFunction, User, UserRole, ConstructionUnit, LaborTracking, DailyMeasurement, CostCenter, Contract, ContractMeasurement, Supplier, ServiceExecution, FVS, WeatherLog } from './types';
 
@@ -40,6 +43,9 @@ const App: React.FC = () => {
   const [isQualityOpen, setIsQualityOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isWeatherSynced, setIsWeatherSynced] = useState(false);
+  const [userViewMode, setUserViewMode] = useState<'list' | 'form'>('list');
+  const [userSearchTerm, setUserSearchTerm] = useState('');
+  const [userRoleFilter, setUserRoleFilter] = useState<string>('Todos');
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -104,6 +110,10 @@ const App: React.FC = () => {
   const [projectFormTab, setProjectFormTab] = useState<'eap' | 'cost' | 'quality'>('eap');
   const [projectSearchTerm, setProjectSearchTerm] = useState('');
   const [isAddingProject, setIsAddingProject] = useState(false);
+  const [isUserCompanySelectorOpen, setIsUserCompanySelectorOpen] = useState(false);
+  const [isUserProjectSelectorOpen, setIsUserProjectSelectorOpen] = useState(false);
+  const [isReportCompanySelectorOpen, setIsReportCompanySelectorOpen] = useState(false);
+  const [isReportProjectSelectorOpen, setIsReportProjectSelectorOpen] = useState(false);
 
   // Form states for new job function
   const [editingJobFunctionId, setEditingJobFunctionId] = useState<string | null>(null);
@@ -116,28 +126,43 @@ const App: React.FC = () => {
   const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
 
   useEffect(() => {
-    const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
+    const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         // Find or create user in Firestore
-        storageService.getUser(firebaseUser.uid).then(user => {
-          if (!user) {
-            user = {
-              id: firebaseUser.uid,
-              name: firebaseUser.displayName || 'Usuário',
-              cpf: '',
-              phone: '',
-              email: firebaseUser.email || '',
-              role: firebaseUser.email === 'guillehorta81@gmail.com' ? UserRole.ADMIN : UserRole.USER,
-              companies: [],
-              projects: [],
-              createdAt: Date.now()
-            };
-            storageService.saveUser(user);
+        let user = await storageService.getUser(firebaseUser.uid);
+        
+        if (!user && firebaseUser.email) {
+          // Check by email if not found by UID (handles pre-registered users)
+          user = await storageService.getUserByEmail(firebaseUser.email);
+          if (user) {
+            // Found by email, update ID to be firebase UID and save
+            const updatedUser = { ...user, id: firebaseUser.uid };
+            // Delete old record if ID changed (to avoid duplicates)
+            if (user.id !== firebaseUser.uid) {
+              await storageService.deleteUser(user.id);
+            }
+            await storageService.saveUser(updatedUser);
+            user = updatedUser;
           }
-          setCurrentUser(user);
-          storageService.setCurrentUser(user);
-          if (view === 'login' || view === 'register') setView('dashboard');
-        });
+        }
+
+        if (!user) {
+          user = {
+            id: firebaseUser.uid,
+            name: firebaseUser.displayName || 'Usuário',
+            cpf: '',
+            phone: '',
+            email: firebaseUser.email || '',
+            role: firebaseUser.email === 'guillehorta81@gmail.com' ? UserRole.ADMIN : UserRole.USER,
+            companies: [],
+            projects: [],
+            createdAt: Date.now()
+          };
+          await storageService.saveUser(user);
+        }
+        setCurrentUser(user);
+        storageService.setCurrentUser(user);
+        if (view === 'login' || view === 'register') setView('dashboard');
       } else {
         setCurrentUser(null);
         storageService.setCurrentUser(null);
@@ -155,7 +180,9 @@ const App: React.FC = () => {
     if (!currentUser) return;
 
     // Subscriptions based on roles
-    const isManager = currentUser.role === UserRole.ADMIN || currentUser.role === UserRole.MANAGER;
+    // Administrador and Gestor can see all users (but Gestor has restrictions on creation)
+    const isManagerOrAdmin = currentUser.role === UserRole.ADMIN || currentUser.role === UserRole.MANAGER;
+    // Usuário role is more restricted in some modules but has CRUD in others
 
     const unsubFvs = storageService.subscribeFVS(setFvsList);
     const unsubProjects = storageService.subscribeProjects(setProjects);
@@ -164,20 +191,16 @@ const App: React.FC = () => {
     const unsubJobFunctions = storageService.subscribeJobFunctions(setJobFunctions);
     const unsubWeather = storageService.subscribeWeatherLogs(setWeatherLogs);
     const unsubTrackings = storageService.subscribeLaborTrackings(setTrackings);
+    const unsubSuppliers = storageService.subscribeSuppliers(setSuppliers);
+    const unsubContracts = storageService.subscribeContracts(setContracts);
+    const unsubContractM = storageService.subscribeContractMeasurements(setContractMeasurements);
+    const unsubExecutions = storageService.subscribeExecutions(setServiceExecutions);
+    const unsubLogs = storageService.subscribeLogs(setLogs);
 
-    // Manager+ only data
-    let unsubSuppliers = () => {};
-    let unsubContracts = () => {};
-    let unsubContractM = () => {};
-    let unsubExecutions = () => {};
-    let unsubLogs = () => {};
-
-    if (isManager) {
-      unsubSuppliers = storageService.subscribeSuppliers(setSuppliers);
-      unsubContracts = storageService.subscribeContracts(setContracts);
-      unsubContractM = storageService.subscribeContractMeasurements(setContractMeasurements);
-      unsubExecutions = storageService.subscribeExecutions(setServiceExecutions);
-      unsubLogs = storageService.subscribeLogs(setLogs);
+    // Only Admin and Gestor can see the user list
+    let unsubUsers = () => {};
+    if (isManagerOrAdmin) {
+      unsubUsers = storageService.subscribeUsers(setUsers);
     }
 
     return () => {
@@ -188,13 +211,12 @@ const App: React.FC = () => {
       unsubJobFunctions();
       unsubWeather();
       unsubTrackings();
-      if (isManager) {
-        unsubSuppliers();
-        unsubContracts();
-        unsubContractM();
-        unsubExecutions();
-        unsubLogs();
-      }
+      unsubSuppliers();
+      unsubContracts();
+      unsubContractM();
+      unsubExecutions();
+      unsubLogs();
+      unsubUsers();
     };
   }, [currentUser]);
 
@@ -212,6 +234,17 @@ const App: React.FC = () => {
     }
   }, [projects, weatherLogs, isWeatherSynced]);
 
+  // Reset dropdowns on view/mode changes
+  useEffect(() => {
+    setIsUserCompanySelectorOpen(false);
+    setIsUserProjectSelectorOpen(false);
+  }, [userViewMode]);
+
+  useEffect(() => {
+    setIsReportCompanySelectorOpen(false);
+    setIsReportProjectSelectorOpen(false);
+  }, [view]);
+
   const handleGoogleLogin = async () => {
     try {
       const provider = new GoogleAuthProvider();
@@ -219,6 +252,36 @@ const App: React.FC = () => {
     } catch (error) {
       console.error("Login Error:", error);
       setFeedback({ type: 'error', msg: "Erro ao fazer login com Google." });
+    }
+  };
+
+  const handleEmailLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!loginEmail || !loginPassword) {
+      setFeedback({ type: 'error', msg: "Informe e-mail e senha." });
+      return;
+    }
+
+    setIsProcessing(true);
+    try {
+      await signInWithEmailAndPassword(auth, loginEmail, loginPassword);
+      setFeedback({ type: 'success', msg: "Login realizado com sucesso!" });
+      setLoginEmail('');
+      setLoginPassword('');
+    } catch (error: any) {
+      console.error("Erro no login:", error);
+      let msg = "Erro ao realizar login.";
+      if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential' || error.code === 'auth/invalid-login-credentials') {
+        msg = "E-mail ou senha incorretos.";
+      } else if (error.code === 'auth/invalid-email') {
+        msg = "E-mail inválido.";
+      } else if (error.code === 'auth/operation-not-allowed') {
+        msg = "O login por e-mail/senha não está ativado no Firebase Console.";
+      }
+      setFeedback({ type: 'error', msg });
+    } finally {
+      setIsProcessing(false);
+      clearFeedback();
     }
   };
 
@@ -519,41 +582,91 @@ const App: React.FC = () => {
     }
   };
 
-  const handleCreateUser = () => {
-    if (!newUserName || !newUserEmail || !newUserPassword || !newUserRole || !newUserCPF) {
+  const handleCreateUser = async () => {
+    // Role specific checks
+    if (currentUser?.role === UserRole.MANAGER) {
+      if (newUserRole === UserRole.ADMIN || newUserRole === UserRole.MANAGER) {
+        setFeedback({ type: 'error', msg: "Gestores podem criar apenas usuários com perfil 'Usuário'." });
+        return;
+      }
+    }
+    
+    if (currentUser?.role === UserRole.USER) {
+      setFeedback({ type: 'error', msg: "Usuários não têm permissão para gerenciar outros usuários." });
+      return;
+    }
+
+    // Password is only mandatory when NEW user
+    const isPasswordValid = editingUserId ? true : !!newUserPassword;
+    
+    if (!newUserName || !newUserEmail || !isPasswordValid || !newUserRole || !newUserCPF) {
       setFeedback({ type: 'error', msg: "Preencha os campos obrigatórios." });
       return;
     }
 
-    const newUser: User = {
-      id: editingUserId || generateId(),
-      name: newUserName,
-      cpf: newUserCPF,
-      phone: newUserPhone,
-      email: newUserEmail,
-      password: newUserPassword,
-      companies: newUserCompanies,
-      projects: newUserProjects,
-      role: newUserRole,
-      createdAt: Date.now()
-    };
+    let createdUid = editingUserId || generateId();
 
-    storageService.saveUser(newUser);
-    setFeedback({ type: 'success', msg: editingUserId ? "Usuário atualizado com sucesso!" : "Usuário cadastrado com sucesso!" });
-    
-    // Reset form
-    setNewUserName('');
-    setNewUserCPF('');
-    setNewUserPhone('');
-    setNewUserEmail('');
-    setNewUserPassword('');
-    setNewUserCompanies([]);
-    setNewUserProjects([]);
-    setNewUserRole(UserRole.USER);
-    setEditingUserId(null);
-    
-    setView('users');
-    clearFeedback();
+    try {
+      // If NEW user, also create Firebase Auth account
+      if (!editingUserId) {
+        setIsProcessing(true);
+        try {
+          const secondaryApp = getApps().length > 1 
+            ? getApp('Secondary') 
+            : initializeApp(firebaseConfig, 'Secondary');
+          const secondaryAuth = getAuth(secondaryApp);
+          
+          const userCredential = await createUserWithEmailAndPassword(secondaryAuth, newUserEmail, newUserPassword);
+          createdUid = userCredential.user.uid;
+          await signOut(secondaryAuth); // Sign out from secondary app to cleanup
+        } catch (authError: any) {
+          console.error("Erro ao criar conta de autenticação:", authError);
+          let msg = "Erro ao criar conta de autenticação.";
+          if (authError.code === 'auth/email-already-in-use') msg = "Este e-mail já está em uso.";
+          else if (authError.code === 'auth/weak-password') msg = "A senha é muito fraca.";
+          else if (authError.code === 'auth/operation-not-allowed') msg = "O login por e-mail/senha não está ativado no Firebase Console.";
+          
+          setFeedback({ type: 'error', msg });
+          setIsProcessing(false);
+          return;
+        }
+      }
+
+      const newUser: User = {
+        id: createdUid,
+        name: newUserName,
+        cpf: newUserCPF,
+        phone: newUserPhone,
+        email: newUserEmail,
+        password: newUserPassword,
+        companies: newUserCompanies,
+        projects: newUserProjects,
+        role: newUserRole,
+        createdAt: Date.now()
+      };
+
+      await storageService.saveUser(newUser);
+      setFeedback({ type: 'success', msg: editingUserId ? "Usuário atualizado com sucesso!" : "Usuário cadastrado com sucesso!" });
+      
+      // Reset form
+      setNewUserName('');
+      setNewUserCPF('');
+      setNewUserPhone('');
+      setNewUserEmail('');
+      setNewUserPassword('');
+      setNewUserCompanies([]);
+      setNewUserProjects([]);
+      setNewUserRole(UserRole.USER);
+      setEditingUserId(null);
+      
+      setUserViewMode('list');
+      setView('users');
+    } catch (error) {
+      console.error("Erro ao salvar usuário:", error);
+    } finally {
+      setIsProcessing(false);
+      clearFeedback();
+    }
   };
 
   const handleEditUser = (user: User) => {
@@ -601,13 +714,74 @@ const App: React.FC = () => {
         <div className="absolute top-0 -left-1/4 w-1/2 h-1/2 bg-indigo-500/10 blur-[120px] rounded-full"></div>
         <div className="absolute bottom-0 -right-1/4 w-1/2 h-1/2 bg-emerald-500/10 blur-[120px] rounded-full"></div>
         
+        {/* Feedback Toast for Login */}
+        {feedback && (
+          <div className={`fixed top-8 right-8 z-50 animate-bounce px-6 py-4 rounded-xl shadow-2xl flex items-center gap-4 ${
+            feedback.type === 'success' ? 'bg-emerald-500 text-white' : 'bg-rose-500 text-white'
+          }`}>
+            <i className={`fas ${feedback.type === 'success' ? 'fa-check-circle' : 'fa-exclamation-circle'}`}></i>
+            <span className="font-medium text-sm">{feedback.msg}</span>
+          </div>
+        )}
+
         <div className="w-full max-w-md bg-white/10 backdrop-blur-xl p-10 rounded-[40px] border border-white/20 shadow-2xl relative z-10">
-          <div className="flex flex-col items-center mb-10">
-            <div className="w-20 h-20 bg-gradient-to-tr from-indigo-600 to-indigo-400 rounded-3xl flex items-center justify-center shadow-2xl shadow-indigo-500/40 transform -rotate-6 mb-6">
-              <i className="fas fa-tower-observation text-4xl text-white"></i>
+          <div className="flex flex-col items-center mb-8">
+            <div className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center shadow-2xl transform -rotate-6 mb-6 p-2">
+              <img 
+                src="/logo.svg" 
+                alt="TowerUP Logo" 
+                className="w-full h-full object-contain"
+                referrerPolicy="no-referrer"
+              />
             </div>
-            <h1 className="text-3xl font-black text-white tracking-tight text-center">TowerUP Pro</h1>
-            <p className="text-slate-400 text-sm mt-2 font-medium">Gestão Inteligente de Obras</p>
+            <h1 className="text-2xl font-black text-white tracking-tight text-center">TowerUP Pro</h1>
+            <p className="text-slate-400 text-xs mt-1 font-medium text-center">Gestão Inteligente de Obras</p>
+          </div>
+
+          <form onSubmit={handleEmailLogin} className="space-y-4 mb-8">
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">E-mail</label>
+              <div className="relative">
+                <i className="fas fa-envelope absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
+                <input 
+                  type="email" 
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
+                  className="w-full pl-10 pr-4 py-3 bg-white/5 border border-white/10 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500 text-white text-sm transition-all"
+                  placeholder="seu@email.com"
+                />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Senha</label>
+              <div className="relative">
+                <i className="fas fa-lock absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
+                <input 
+                  type="password" 
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  className="w-full pl-10 pr-4 py-3 bg-white/5 border border-white/10 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500 text-white text-sm transition-all"
+                  placeholder="••••••••"
+                />
+              </div>
+            </div>
+            <button 
+              type="submit"
+              disabled={isProcessing}
+              className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-bold transition-all shadow-lg shadow-indigo-500/20 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none"
+            >
+              {isProcessing ? <i className="fas fa-spinner fa-spin mr-2"></i> : null}
+              Acessar Sistema
+            </button>
+          </form>
+
+          <div className="relative mb-8">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-white/10"></div>
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-transparent px-4 text-slate-500 font-bold tracking-widest">ou</span>
+            </div>
           </div>
 
           <div className="space-y-4">
@@ -618,8 +792,8 @@ const App: React.FC = () => {
               <img src="https://www.google.com/favicon.ico" alt="Google" className="w-5 h-5" />
               Entrar com Google
             </button>
-            <p className="text-center text-slate-500 text-xs mt-6">
-              Ao entrar, você concorda com nossos Termos e Privacidade
+            <p className="text-center text-slate-500 text-[10px] mt-6 font-medium">
+              Acesso exclusivo para colaboradores autorizados.
             </p>
           </div>
         </div>
@@ -641,10 +815,15 @@ const App: React.FC = () => {
         </button>
 
         <div className={`p-6 flex items-center gap-3 ${isSidebarCollapsed ? 'justify-center px-0' : ''}`}>
-          <div className="w-10 h-10 bg-indigo-500 rounded-lg flex items-center justify-center shrink-0">
-            <i className="fas fa-tower-observation text-xl"></i>
+          <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center shrink-0 overflow-hidden shadow-sm border border-slate-200">
+            <img 
+              src="/logo.svg" 
+              alt="HM Tower Logo" 
+              className="w-8 h-8 object-contain"
+              referrerPolicy="no-referrer"
+            />
           </div>
-          {!isSidebarCollapsed && <span className="text-xl font-bold tracking-tight truncate">TowerUP</span>}
+          {!isSidebarCollapsed && <span className="text-xl font-bold tracking-tight truncate text-white">TowerUP</span>}
         </div>
         
         <nav className="flex-1 mt-4 px-4 space-y-1 overflow-y-auto overflow-x-hidden">
@@ -720,7 +899,7 @@ const App: React.FC = () => {
               
               {isCadastrosOpen && !isSidebarCollapsed && (
                 <div className="mt-1 space-y-1 ml-2 border-l border-indigo-800/50">
-                  {currentUser.role === UserRole.ADMIN && (
+                  {(currentUser.role === UserRole.ADMIN || currentUser.role === UserRole.MANAGER || currentUser.role === UserRole.USER) && (
                     <>
                       <button 
                         onClick={() => setView('companies')}
@@ -740,6 +919,12 @@ const App: React.FC = () => {
                       >
                         <i className="fas fa-truck w-4"></i> Fornecedores
                       </button>
+                      <button 
+                        onClick={() => setView('functions')}
+                        className={`w-full text-left px-6 py-2.5 rounded-r-xl transition flex items-center gap-3 text-sm ${view === 'functions' ? 'bg-indigo-800 text-white' : 'text-indigo-100 hover:bg-indigo-800/30'}`}
+                      >
+                        <i className="fas fa-briefcase w-4"></i> Funções
+                      </button>
                     </>
                   )}
                   <button 
@@ -748,14 +933,8 @@ const App: React.FC = () => {
                   >
                     <i className="fas fa-users w-4"></i> Colaboradores
                   </button>
-                  {currentUser.role === UserRole.ADMIN && (
+                  {(currentUser.role === UserRole.ADMIN || currentUser.role === UserRole.MANAGER) && (
                     <>
-                      <button 
-                        onClick={() => setView('functions')}
-                        className={`w-full text-left px-6 py-2.5 rounded-r-xl transition flex items-center gap-3 text-sm ${view === 'functions' ? 'bg-indigo-800 text-white' : 'text-indigo-100 hover:bg-indigo-800/30'}`}
-                      >
-                        <i className="fas fa-briefcase w-4"></i> Funções
-                      </button>
                       <button 
                         onClick={() => setView('users')}
                         className={`w-full text-left px-6 py-2.5 rounded-r-xl transition flex items-center gap-3 text-sm ${view === 'users' ? 'bg-indigo-800 text-white' : 'text-indigo-100 hover:bg-indigo-800/30'}`}
@@ -1060,53 +1239,61 @@ const App: React.FC = () => {
               
               {/* Form to add company */}
               <div className="lg:col-span-1">
-                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                  <div className="flex justify-between items-center mb-6">
-                    <h3 className="text-xl font-bold text-slate-800">{editingCompanyId ? 'Editar Empresa' : 'Nova Empresa'}</h3>
-                    {editingCompanyId && (
-                      <button 
-                        onClick={() => {
-                          setEditingCompanyId(null);
-                          setNewCompanyName('');
-                          setNewCompanyCNPJ('');
-                        }}
-                        className="text-xs text-rose-500 font-medium hover:underline"
-                      >
-                        Cancelar
-                      </button>
-                    )}
-                  </div>
-                  
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-sm font-medium text-slate-600 mb-1">Nome da Empresa</label>
-                      <input 
-                        type="text" 
-                        value={newCompanyName}
-                        onChange={(e) => setNewCompanyName(e.target.value)}
-                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition"
-                        placeholder="Ex: Construtora Silva"
-                      />
+                {(currentUser.role === UserRole.ADMIN || (editingCompanyId && currentUser.role === UserRole.MANAGER)) ? (
+                  <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                    <div className="flex justify-between items-center mb-6">
+                      <h3 className="text-xl font-bold text-slate-800">{editingCompanyId ? 'Editar Empresa' : 'Nova Empresa'}</h3>
+                      {editingCompanyId && (
+                        <button 
+                          onClick={() => {
+                            setEditingCompanyId(null);
+                            setNewCompanyName('');
+                            setNewCompanyCNPJ('');
+                          }}
+                          className="text-xs text-rose-500 font-medium hover:underline"
+                        >
+                          Cancelar
+                        </button>
+                      )}
                     </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-600 mb-1">CNPJ</label>
-                      <input 
-                        type="text" 
-                        value={newCompanyCNPJ}
-                        onChange={(e) => setNewCompanyCNPJ(e.target.value)}
-                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition"
-                        placeholder="00.000.000/0000-00"
-                      />
-                    </div>
+                    
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-slate-600 mb-1">Nome da Empresa</label>
+                        <input 
+                          type="text" 
+                          value={newCompanyName}
+                          onChange={(e) => setNewCompanyName(e.target.value)}
+                          className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition"
+                          placeholder="Ex: Construtora Silva"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-600 mb-1">CNPJ</label>
+                        <input 
+                          type="text" 
+                          value={newCompanyCNPJ}
+                          onChange={(e) => setNewCompanyCNPJ(e.target.value)}
+                          className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition"
+                          placeholder="00.000.000/0000-00"
+                        />
+                      </div>
 
-                    <button 
-                      onClick={handleCreateCompany}
-                      className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-200"
-                    >
-                      {editingCompanyId ? 'Salvar Alterações' : 'Cadastrar Empresa'}
-                    </button>
+                      <button 
+                        onClick={handleCreateCompany}
+                        className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-200"
+                      >
+                        {editingCompanyId ? 'Salvar Alterações' : 'Cadastrar Empresa'}
+                      </button>
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                    <p className="text-slate-500 text-sm text-center italic">
+                      Apenas administradores podem cadastrar novas empresas.
+                    </p>
+                  </div>
+                )}
               </div>
 
               {/* Company List */}
@@ -1131,22 +1318,26 @@ const App: React.FC = () => {
                             <h4 className="font-bold text-slate-800 truncate">{comp.name}</h4>
                             <p className="text-xs text-slate-500 truncate">CNPJ: {comp.cnpj}</p>
                           </div>
-                          <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-all">
-                            <button 
-                              onClick={() => handleEditCompany(comp)}
-                              className="w-8 h-8 rounded-full bg-white text-slate-300 hover:text-indigo-500 hover:bg-indigo-50 flex items-center justify-center transition-all"
-                            >
-                              <i className="fas fa-edit text-xs"></i>
-                            </button>
-                            <button 
-                              onClick={() => {
-                                storageService.deleteCompany(comp.id);
-                                setCompanies(prev => prev.filter(c => c.id !== comp.id));
-                              }}
-                              className="w-8 h-8 rounded-full bg-white text-slate-300 hover:text-rose-500 hover:bg-rose-50 flex items-center justify-center transition-all"
-                            >
-                              <i className="fas fa-trash-alt text-xs"></i>
-                            </button>
+                          <div className="flex gap-2">
+                            {(currentUser.role === UserRole.ADMIN || currentUser.role === UserRole.MANAGER) && (
+                              <button 
+                                onClick={() => handleEditCompany(comp)}
+                                className="w-8 h-8 rounded-full bg-white text-slate-300 hover:text-indigo-500 hover:bg-indigo-50 flex items-center justify-center transition-all opacity-0 group-hover:opacity-100 shadow-sm"
+                              >
+                                <i className="fas fa-edit text-xs"></i>
+                              </button>
+                            )}
+                            {currentUser.role === UserRole.ADMIN && (
+                              <button 
+                                onClick={() => {
+                                  storageService.deleteCompany(comp.id);
+                                  setCompanies(prev => prev.filter(c => c.id !== comp.id));
+                                }}
+                                className="w-8 h-8 rounded-full bg-white text-slate-300 hover:text-rose-500 hover:bg-rose-50 flex items-center justify-center transition-all opacity-0 group-hover:opacity-100 shadow-sm"
+                              >
+                                <i className="fas fa-trash-alt text-xs"></i>
+                              </button>
+                            )}
                           </div>
                         </div>
                       ))
@@ -1177,34 +1368,36 @@ const App: React.FC = () => {
                         className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition"
                       />
                     </div>
-                    <button 
-                      onClick={() => {
-                        setIsAddingProject(!isAddingProject);
-                        if (!isAddingProject) {
-                          setEditingProjectId(null);
-                          setNewProjectCode('');
-                          setNewProjectName('');
-                          setNewProjectStatus('Ativa');
-                          setNewProjectConstructionUnits([]);
-                          setNewProjectCostStructure([]);
-                          setNewProjectFvsMapping({});
-                        }
-                      }}
-                      className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold hover:bg-indigo-700 transition flex items-center gap-2"
-                    >
-                      <i className={`fas ${isAddingProject ? 'fa-times' : 'fa-plus'}`}></i>
-                      {isAddingProject ? 'Cancelar' : 'Nova Obra'}
-                    </button>
+                    {currentUser.role === UserRole.ADMIN && (
+                      <button 
+                        onClick={() => {
+                          setIsAddingProject(!isAddingProject);
+                          if (!isAddingProject) {
+                            setEditingProjectId(null);
+                            setNewProjectCode('');
+                            setNewProjectName('');
+                            setNewProjectStatus('Ativa');
+                            setNewProjectConstructionUnits([]);
+                            setNewProjectCostStructure([]);
+                            setNewProjectFvsMapping({});
+                          }
+                        }}
+                        className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold hover:bg-indigo-700 transition flex items-center gap-2"
+                      >
+                        <i className={`fas ${isAddingProject ? 'fa-times' : 'fa-plus'}`}></i>
+                        {isAddingProject ? 'Cancelar' : 'Nova Obra'}
+                      </button>
+                    )}
                   </div>
                 </div>
                 <div className="p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {projects?.filter(p => p.name.toLowerCase().includes(projectSearchTerm.toLowerCase())).length === 0 ? (
+                  {userProjects?.filter(p => p.name.toLowerCase().includes(projectSearchTerm.toLowerCase())).length === 0 ? (
                     <div className="col-span-full py-12 text-center">
                       <i className="fas fa-hard-hat text-4xl text-slate-200 mb-4"></i>
                       <p className="text-slate-400">Nenhuma obra encontrada.</p>
                     </div>
                   ) : (
-                    projects?.filter(p => p.name.toLowerCase().includes(projectSearchTerm.toLowerCase()))
+                    userProjects?.filter(p => p.name.toLowerCase().includes(projectSearchTerm.toLowerCase()))
                       .map(proj => (
                         <div key={proj.id} className="group relative bg-slate-50 p-4 rounded-xl border border-slate-100 flex items-center gap-4 hover:border-indigo-200 hover:bg-indigo-50/30 transition">
                           <div className="w-12 h-12 bg-white rounded-lg flex items-center justify-center text-indigo-500 shadow-sm border border-slate-100">
@@ -1235,29 +1428,33 @@ const App: React.FC = () => {
                               )}
                             </div>
                           </div>
-                          <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-all">
-                            <button 
-                              onClick={() => handleEditProject(proj)}
-                              className="w-8 h-8 rounded-full bg-white text-slate-300 hover:text-indigo-500 hover:bg-indigo-50 flex items-center justify-center shadow-sm transition-all"
-                            >
-                              <i className="fas fa-edit text-xs"></i>
-                            </button>
-                            <button 
-                              onClick={() => {
-                                setConfirmModal({
-                                  isOpen: true,
-                                  title: "Confirmar Exclusão",
-                                  message: "Tem certeza que deseja excluir esta obra? Esta ação não pode ser desfeita.",
-                                  onConfirm: () => {
-                                    storageService.deleteProject(proj.id);
-                                    setProjects(prev => prev.filter(p => p.id !== proj.id));
-                                  }
-                                });
-                              }}
-                              className="w-8 h-8 rounded-full bg-white text-slate-300 hover:text-rose-500 hover:bg-rose-50 flex items-center justify-center shadow-sm transition-all"
-                            >
-                              <i className="fas fa-trash-alt text-xs"></i>
-                            </button>
+                          <div className="flex gap-2">
+                            {(currentUser.role === UserRole.ADMIN || currentUser.role === UserRole.MANAGER) && (
+                              <button 
+                                onClick={() => handleEditProject(proj)}
+                                className="w-8 h-8 rounded-full bg-white text-slate-300 hover:text-indigo-500 hover:bg-indigo-50 flex items-center justify-center shadow-sm transition-all opacity-0 group-hover:opacity-100"
+                              >
+                                <i className="fas fa-edit text-xs"></i>
+                              </button>
+                            )}
+                            {currentUser.role === UserRole.ADMIN && (
+                              <button 
+                                onClick={() => {
+                                  setConfirmModal({
+                                    isOpen: true,
+                                    title: "Confirmar Exclusão",
+                                    message: "Tem certeza que deseja excluir esta obra? Esta ação não pode ser desfeita.",
+                                    onConfirm: () => {
+                                      storageService.deleteProject(proj.id);
+                                      setProjects(prev => prev.filter(p => p.id !== proj.id));
+                                    }
+                                  });
+                                }}
+                                className="w-8 h-8 rounded-full bg-white text-slate-300 hover:text-rose-500 hover:bg-rose-50 flex items-center justify-center shadow-sm transition-all opacity-0 group-hover:opacity-100"
+                              >
+                                <i className="fas fa-trash-alt text-xs"></i>
+                              </button>
+                            )}
                           </div>
                         </div>
                       ))
@@ -1266,7 +1463,7 @@ const App: React.FC = () => {
               </div>
 
               {/* Project Form (Add/Edit) */}
-              {isAddingProject && (
+              {(isAddingProject && (currentUser.role === UserRole.ADMIN || (editingProjectId && currentUser.role === UserRole.MANAGER))) && (
                 <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200 animate-in fade-in slide-in-from-bottom-4 duration-300">
                   <div className="flex justify-between items-center mb-8">
                     <div>
@@ -1524,13 +1721,16 @@ const App: React.FC = () => {
 
           {/* Users Management View */}
           {view === 'users' && currentUser?.role === UserRole.ADMIN && (
-            <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-8">
-              <div className="lg:col-span-1">
-                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                  <div className="flex justify-between items-center mb-6">
-                    <h3 className="text-xl font-bold text-slate-800">{editingUserId ? 'Editar Usuário' : 'Novo Usuário'}</h3>
-                    {editingUserId && (
-                      <button onClick={() => {
+            <div className="max-w-6xl mx-auto space-y-6">
+              {userViewMode === 'list' ? (
+                <div className="space-y-6">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                    <div>
+                      <h3 className="text-xl font-bold text-slate-800">Administração de Usuários</h3>
+                      <p className="text-sm text-slate-500">Gerencie os acessos e permissões dos usuários do sistema.</p>
+                    </div>
+                    <button 
+                      onClick={() => {
                         setEditingUserId(null);
                         setNewUserName('');
                         setNewUserCPF('');
@@ -1540,119 +1740,337 @@ const App: React.FC = () => {
                         setNewUserCompanies([]);
                         setNewUserProjects([]);
                         setNewUserRole(UserRole.USER);
-                      }} className="text-xs text-rose-500 font-medium hover:underline">Cancelar</button>
-                    )}
-                  </div>
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-sm font-medium text-slate-600 mb-1">Nome Completo</label>
-                      <input type="text" value={newUserName} onChange={(e) => setNewUserName(e.target.value)} className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" />
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm font-medium text-slate-600 mb-1">CPF</label>
-                        <input type="text" value={newUserCPF} onChange={(e) => setNewUserCPF(e.target.value)} className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-slate-600 mb-1">Telefone</label>
-                        <input type="text" value={newUserPhone} onChange={(e) => setNewUserPhone(e.target.value)} className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-600 mb-1">E-mail</label>
-                      <input type="email" value={newUserEmail} onChange={(e) => setNewUserEmail(e.target.value)} className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-600 mb-1">Senha</label>
-                      <input type="password" value={newUserPassword} onChange={(e) => setNewUserPassword(e.target.value)} className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500" />
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm font-medium text-slate-600 mb-1">Empresas</label>
-                        <div className="relative group">
-                          <div className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm cursor-pointer truncate">
-                            {newUserCompanies.length === 0 ? 'Selecione' : `${newUserCompanies.length} selecionadas`}
-                          </div>
-                          <div className="absolute top-full left-0 w-full bg-white border border-slate-200 rounded-lg shadow-xl z-50 hidden group-hover:block p-2 max-h-48 overflow-y-auto">
-                            {companies?.map(c => (
-                              <label key={c.id} className="flex items-center gap-2 p-2 hover:bg-slate-50 rounded cursor-pointer text-xs text-slate-700">
-                                <input 
-                                  type="checkbox" 
-                                  checked={newUserCompanies.includes(c.name)}
-                                  onChange={(e) => {
-                                    if (e.target.checked) setNewUserCompanies([...newUserCompanies, c.name]);
-                                    else setNewUserCompanies(newUserCompanies.filter(name => name !== c.name));
-                                  }}
-                                />
-                                {c.name}
-                              </label>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-slate-600 mb-1">Obras</label>
-                        <div className="relative group">
-                          <div className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm cursor-pointer truncate">
-                            {newUserProjects.length === 0 ? 'Selecione' : `${newUserProjects.length} selecionadas`}
-                          </div>
-                          <div className="absolute top-full left-0 w-full bg-white border border-slate-200 rounded-lg shadow-xl z-50 hidden group-hover:block p-2 max-h-48 overflow-y-auto">
-                            {projects?.map(p => (
-                              <label key={p.id} className="flex items-center gap-2 p-2 hover:bg-slate-50 rounded cursor-pointer text-xs text-slate-700">
-                                <input 
-                                  type="checkbox" 
-                                  checked={newUserProjects.includes(p.name)}
-                                  onChange={(e) => {
-                                    if (e.target.checked) setNewUserProjects([...newUserProjects, p.name]);
-                                    else setNewUserProjects(newUserProjects.filter(name => name !== p.name));
-                                  }}
-                                />
-                                {p.name}
-                              </label>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-600 mb-1">Tipo de Usuário</label>
-                      <select value={newUserRole} onChange={(e) => setNewUserRole(e.target.value as UserRole)} className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500">
-                        {Object.values(UserRole)?.map(role => <option key={role} value={role}>{role}</option>)}
-                      </select>
-                    </div>
-                    <button onClick={handleCreateUser} className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition shadow-lg">
-                      {editingUserId ? 'Salvar Alterações' : 'Cadastrar Usuário'}
+                        setUserViewMode('form');
+                      }} 
+                      className="px-6 py-2.5 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition flex items-center gap-2 shadow-lg shadow-indigo-200"
+                    >
+                      <i className="fas fa-plus"></i> Novo Usuário
                     </button>
                   </div>
-                </div>
-              </div>
-              <div className="lg:col-span-2">
-                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-                  <div className="p-6 border-b border-slate-100">
-                    <h3 className="font-bold text-slate-800">Usuários do Sistema</h3>
+
+                  <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                    <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex flex-col md:flex-row gap-4">
+                      <div className="flex-1 relative">
+                        <i className="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                        <input 
+                          type="text" 
+                          placeholder="Buscar por nome ou e-mail..." 
+                          value={userSearchTerm}
+                          onChange={(e) => setUserSearchTerm(e.target.value)}
+                          className="w-full pl-11 pr-4 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+                        />
+                      </div>
+                      <div className="w-full md:w-48">
+                        <select 
+                          value={userRoleFilter} 
+                          onChange={(e) => setUserRoleFilter(e.target.value)}
+                          className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+                        >
+                          <option value="Todos">Todos os Níveis</option>
+                          {Object.values(UserRole).map(role => <option key={role} value={role}>{role}</option>)}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left">
+                        <thead className="bg-slate-50 text-slate-500 text-[10px] uppercase font-bold tracking-wider">
+                          <tr>
+                            <th className="px-6 py-4">Usuário</th>
+                            <th className="px-6 py-4">Contato / CPF</th>
+                            <th className="px-6 py-4">Tipo</th>
+                            <th className="px-6 py-4">Acessos (Empr. / Obras)</th>
+                            <th className="px-6 py-4 text-center">Ações</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {users
+                            .filter(u => {
+                              const matchesSearch = u.name.toLowerCase().includes(userSearchTerm.toLowerCase()) || 
+                                                  u.email.toLowerCase().includes(userSearchTerm.toLowerCase());
+                              const matchesRole = userRoleFilter === 'Todos' || u.role === userRoleFilter;
+                              return matchesSearch && matchesRole;
+                            })
+                            .map(u => (
+                              <tr key={u.id} className="hover:bg-indigo-50/10 transition">
+                                <td className="px-6 py-4">
+                                  <div className="flex items-center gap-3">
+                                    <div className="w-9 h-9 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center font-bold text-sm">
+                                      {u.name.charAt(0)}
+                                    </div>
+                                    <div>
+                                      <div className="font-bold text-slate-800 text-sm">{u.name}</div>
+                                      <div className="text-xs text-slate-500">{u.email}</div>
+                                    </div>
+                                  </div>
+                                </td>
+                                <td className="px-6 py-4">
+                                  <div className="text-sm text-slate-700">{u.phone || '-'}</div>
+                                  <div className="text-[10px] text-slate-400 font-mono tracking-tighter">{u.cpf || 'Sem CPF'}</div>
+                                </td>
+                                <td className="px-6 py-4">
+                                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                    u.role === UserRole.ADMIN ? 'bg-indigo-100 text-indigo-700' :
+                                    u.role === UserRole.MANAGER ? 'bg-emerald-100 text-emerald-700' :
+                                    'bg-slate-100 text-slate-700'
+                                  }`}>
+                                    {u.role}
+                                  </span>
+                                </td>
+                                <td className="px-6 py-4 max-w-xs">
+                                  <div className="text-[10px] text-slate-600 truncate mb-0.5">
+                                    <i className="fas fa-building w-3 text-slate-400"></i> {u.companies?.join(', ') || 'Todas'}
+                                  </div>
+                                  <div className="text-[10px] text-slate-600 truncate">
+                                    <i className="fas fa-tower-observation w-3 text-slate-400"></i> {u.projects?.join(', ') || 'Todas'}
+                                  </div>
+                                </td>
+                                <td className="px-6 py-4">
+                                  <div className="flex justify-center gap-2">
+                                    <button 
+                                      onClick={() => {
+                                        handleEditUser(u);
+                                        setUserViewMode('form');
+                                      }} 
+                                      className="w-8 h-8 rounded-full bg-slate-50 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 flex items-center justify-center transition border border-slate-100"
+                                      title="Editar"
+                                    >
+                                      <i className="fas fa-edit text-xs"></i>
+                                    </button>
+                                    <button 
+                                      onClick={() => {
+                                        if (u.id === currentUser?.id) {
+                                          setFeedback({ type: 'error', msg: "Você não pode excluir seu próprio usuário." });
+                                          clearFeedback();
+                                          return;
+                                        }
+                                        setConfirmModal({
+                                          isOpen: true,
+                                          title: 'Excluir Usuário',
+                                          message: `Tem certeza que deseja excluir o usuário ${u.name}? Esta ação não pode ser desfeita.`,
+                                          onConfirm: async () => {
+                                            await storageService.deleteUser(u.id);
+                                            setFeedback({ type: 'success', msg: "Usuário excluído com sucesso!" });
+                                            clearFeedback();
+                                            setConfirmModal(prev => ({ ...prev, isOpen: false }));
+                                          }
+                                        });
+                                      }} 
+                                      className="w-8 h-8 rounded-full bg-slate-50 text-slate-400 hover:text-rose-600 hover:bg-rose-50 flex items-center justify-center transition border border-slate-100"
+                                      title="Excluir"
+                                    >
+                                      <i className="fas fa-trash-alt text-xs"></i>
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          {users.filter(u => {
+                            const matchesSearch = u.name.toLowerCase().includes(userSearchTerm.toLowerCase()) || 
+                                                u.email.toLowerCase().includes(userSearchTerm.toLowerCase());
+                            const matchesRole = userRoleFilter === 'Todos' || u.role === userRoleFilter;
+                            return matchesSearch && matchesRole;
+                          }).length === 0 && (
+                            <tr>
+                              <td colSpan={5} className="px-6 py-20 text-center text-slate-400">
+                                <i className="fas fa-users-slash text-4xl mb-4 block opacity-20"></i>
+                                Nenhum usuário encontrado para os filtros aplicados.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
-                  <div className="p-6 grid grid-cols-1 gap-4">
-                    {users?.map(u => (
-                      <div key={u.id} className="p-4 bg-slate-50 rounded-xl border border-slate-100 flex justify-between items-center">
-                        <div>
-                          <div className="font-bold text-slate-800">{u.name}</div>
-                          <div className="text-xs text-slate-500">{u.email} • {u.role}</div>
-                          <div className="text-[10px] text-indigo-500 uppercase font-bold mt-1">
-                            {u.companies?.join(', ') || 'Sem Empresa'} | {u.projects?.join(', ') || 'Sem Obra'}
-                          </div>
+                </div>
+              ) : (
+                <div className="max-w-2xl mx-auto">
+                  <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-xl overflow-hidden relative">
+                    <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-indigo-500 to-indigo-300"></div>
+                    
+                    <div className="flex justify-between items-center mb-10">
+                      <div>
+                        <h3 className="text-2xl font-bold text-slate-800">{editingUserId ? 'Editar Usuário' : 'Novo Cadastro de Usuário'}</h3>
+                        <p className="text-slate-500 text-sm">Preencha as informações para definir o acesso ao sistema.</p>
+                      </div>
+                      <button 
+                        onClick={() => setUserViewMode('list')} 
+                        className="w-10 h-10 rounded-full bg-slate-50 text-slate-400 hover:text-slate-600 flex items-center justify-center transition border border-slate-100"
+                      >
+                        <i className="fas fa-times"></i>
+                      </button>
+                    </div>
+
+                    <div className="space-y-6">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="space-y-1">
+                          <label className="text-xs font-bold text-slate-400 uppercase tracking-wider ml-1">Nome Completo *</label>
+                          <input 
+                            type="text" 
+                            value={newUserName} 
+                            onChange={(e) => setNewUserName(e.target.value)} 
+                            className="w-full px-5 py-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all text-slate-700"
+                            placeholder="Ex: João da Silva"
+                          />
                         </div>
-                        <div className="flex gap-2">
-                          <button onClick={() => handleEditUser(u)} className="w-8 h-8 rounded-full bg-white text-slate-300 hover:text-indigo-500 flex items-center justify-center transition shadow-sm"><i className="fas fa-edit text-xs"></i></button>
-                          <button onClick={async () => {
-                            if (u.id === 'admin-001') return;
-                            await storageService.deleteUser(u.id);
-                          }} className="w-8 h-8 rounded-full bg-white text-slate-300 hover:text-rose-500 flex items-center justify-center transition shadow-sm"><i className="fas fa-trash-alt text-xs"></i></button>
+                        <div className="space-y-1">
+                          <label className="text-xs font-bold text-slate-400 uppercase tracking-wider ml-1">CPF *</label>
+                          <input 
+                            type="text" 
+                            value={newUserCPF} 
+                            onChange={(e) => setNewUserCPF(e.target.value)} 
+                            className="w-full px-5 py-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all text-slate-700 font-mono"
+                            placeholder="000.000.000-00"
+                          />
                         </div>
                       </div>
-                    ))}
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="space-y-1">
+                          <label className="text-xs font-bold text-slate-400 uppercase tracking-wider ml-1">E-mail *</label>
+                          <input 
+                            type="email" 
+                            value={newUserEmail} 
+                            onChange={(e) => setNewUserEmail(e.target.value)} 
+                            className="w-full px-5 py-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all text-slate-700"
+                            placeholder="email@exemplo.com"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs font-bold text-slate-400 uppercase tracking-wider ml-1">Telefone</label>
+                          <input 
+                            type="text" 
+                            value={newUserPhone} 
+                            onChange={(e) => setNewUserPhone(e.target.value)} 
+                            className="w-full px-5 py-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all text-slate-700"
+                            placeholder="(00) 00000-0000"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-400 uppercase tracking-wider ml-1">Tipo de Usuário / Nível de Acesso *</label>
+                        <div className="grid grid-cols-3 gap-2">
+                          {Object.values(UserRole).map(role => (
+                            <button
+                              key={role}
+                              onClick={() => setNewUserRole(role)}
+                              className={`py-3 rounded-2xl text-xs font-bold transition-all border-2 ${
+                                newUserRole === role 
+                                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-lg shadow-indigo-100' 
+                                  : 'bg-white text-slate-500 border-slate-100 hover:border-indigo-200'
+                              }`}
+                            >
+                              {role}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {!editingUserId && (
+                        <div className="space-y-1">
+                          <label className="text-xs font-bold text-slate-400 uppercase tracking-wider ml-1">Senha Provisória *</label>
+                          <input 
+                            type="password" 
+                            value={newUserPassword} 
+                            onChange={(e) => setNewUserPassword(e.target.value)} 
+                            className="w-full px-5 py-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all text-slate-700"
+                            placeholder="Min. 6 caracteres"
+                          />
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="space-y-1">
+                          <label className="text-xs font-bold text-slate-400 uppercase tracking-wider ml-1">Permitir para Empresas</label>
+                          <div className="relative">
+                            <div 
+                              onClick={() => setIsUserCompanySelectorOpen(!isUserCompanySelectorOpen)}
+                              className="w-full px-5 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm flex items-center justify-between cursor-pointer"
+                            >
+                              <span className={newUserCompanies.length === 0 ? 'text-slate-400' : 'text-slate-700'}>
+                                {newUserCompanies.length === 0 ? 'Todas as Empresas' : `${newUserCompanies.length} Selecionadas`}
+                              </span>
+                              <i className={`fas fa-chevron-${isUserCompanySelectorOpen ? 'up' : 'down'} text-[10px] text-slate-400 transition-transform`}></i>
+                            </div>
+                            {isUserCompanySelectorOpen && (
+                              <div className="absolute top-full left-0 w-full bg-white border border-slate-200 rounded-2xl shadow-2xl z-[60] p-3 mt-2 max-h-48 overflow-y-auto animate-in fade-in zoom-in-95 duration-200">
+                                <label className="flex items-center gap-3 p-2 hover:bg-slate-50 rounded-xl cursor-not-allowed text-xs text-slate-400 mb-1 border-b border-slate-50">
+                                  <span>Controle de Acesso por Empresa</span>
+                                </label>
+                                {companies.map(c => (
+                                  <label key={c.id} className="flex items-center gap-3 p-2 hover:bg-indigo-50 rounded-xl cursor-pointer text-xs text-slate-700 transition">
+                                    <input 
+                                      type="checkbox" 
+                                      checked={newUserCompanies.includes(c.name)}
+                                      onChange={(e) => {
+                                        if (e.target.checked) setNewUserCompanies([...newUserCompanies, c.name]);
+                                        else setNewUserCompanies(newUserCompanies.filter(n => n !== c.name));
+                                      }}
+                                      className="accent-indigo-600 w-4 h-4"
+                                    />
+                                    {c.name}
+                                  </label>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs font-bold text-slate-400 uppercase tracking-wider ml-1">Permitir para Obras</label>
+                          <div className="relative">
+                            <div 
+                              onClick={() => setIsUserProjectSelectorOpen(!isUserProjectSelectorOpen)}
+                              className="w-full px-5 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-sm flex items-center justify-between cursor-pointer"
+                            >
+                              <span className={newUserProjects.length === 0 ? 'text-slate-400' : 'text-slate-700'}>
+                                {newUserProjects.length === 0 ? 'Todas as Obras' : `${newUserProjects.length} Selecionadas`}
+                              </span>
+                              <i className={`fas fa-chevron-${isUserProjectSelectorOpen ? 'up' : 'down'} text-[10px] text-slate-400 transition-transform`}></i>
+                            </div>
+                            {isUserProjectSelectorOpen && (
+                              <div className="absolute top-full left-0 w-full bg-white border border-slate-200 rounded-2xl shadow-2xl z-[60] p-3 mt-2 max-h-48 overflow-y-auto animate-in fade-in zoom-in-95 duration-200">
+                                <label className="flex items-center gap-3 p-2 hover:bg-slate-50 rounded-xl cursor-not-allowed text-xs text-slate-400 mb-1 border-b border-slate-50">
+                                  <span>Controle de Acesso por Obra</span>
+                                </label>
+                                {userProjects.map(p => (
+                                  <label key={p.id} className="flex items-center gap-3 p-2 hover:bg-indigo-50 rounded-xl cursor-pointer text-xs text-slate-700 transition">
+                                    <input 
+                                      type="checkbox" 
+                                      checked={newUserProjects.includes(p.name)}
+                                      onChange={(e) => {
+                                        if (e.target.checked) setNewUserProjects([...newUserProjects, p.name]);
+                                        else setNewUserProjects(newUserProjects.filter(n => n !== p.name));
+                                      }}
+                                      className="accent-indigo-600 w-4 h-4"
+                                    />
+                                    {p.name}
+                                  </label>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="pt-4 flex gap-4">
+                        <button 
+                          onClick={() => setUserViewMode('list')}
+                          className="flex-1 py-4 bg-slate-100 text-slate-600 rounded-2xl font-bold hover:bg-slate-200 transition"
+                        >
+                          Cancelar
+                        </button>
+                        <button 
+                          onClick={handleCreateUser} 
+                          className="flex-[2] py-4 bg-indigo-600 text-white rounded-2xl font-bold hover:bg-indigo-700 transition shadow-xl shadow-indigo-100"
+                        >
+                          {editingUserId ? 'Salvar Alterações' : 'Cadastrar Usuário'}
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
             </div>
           )}
 
@@ -1781,48 +2199,60 @@ const App: React.FC = () => {
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Empresas</label>
-                    <div className="relative group">
-                      <div className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm cursor-pointer truncate">
+                    <div className="relative">
+                      <div 
+                        onClick={() => setIsReportCompanySelectorOpen(!isReportCompanySelectorOpen)}
+                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm cursor-pointer truncate flex items-center justify-between"
+                      >
                         {selectedCompanies.length === 0 ? 'Todas' : `${selectedCompanies.length} selecionadas`}
+                        <i className={`fas fa-chevron-${isReportCompanySelectorOpen ? 'up' : 'down'} text-[10px] text-slate-400`}></i>
                       </div>
-                      <div className="absolute top-full left-0 w-full bg-white border border-slate-200 rounded-lg shadow-xl z-50 hidden group-hover:block p-2 max-h-48 overflow-y-auto">
-                        {companies?.map(c => (
-                          <label key={c.id} className="flex items-center gap-2 p-2 hover:bg-slate-50 rounded cursor-pointer text-xs">
-                            <input 
-                              type="checkbox" 
-                              checked={selectedCompanies.includes(c.name)}
-                              onChange={(e) => {
-                                if (e.target.checked) setSelectedCompanies([...selectedCompanies, c.name]);
-                                else setSelectedCompanies(selectedCompanies.filter(id => id !== c.name));
-                              }}
-                            />
-                            {c.name}
-                          </label>
-                        ))}
-                      </div>
+                      {isReportCompanySelectorOpen && (
+                        <div className="absolute top-full left-0 w-full bg-white border border-slate-200 rounded-lg shadow-xl z-50 p-2 max-h-48 overflow-y-auto animate-in fade-in zoom-in-95 duration-200">
+                          {companies?.map(c => (
+                            <label key={c.id} className="flex items-center gap-2 p-2 hover:bg-slate-50 rounded cursor-pointer text-xs">
+                              <input 
+                                type="checkbox" 
+                                checked={selectedCompanies.includes(c.name)}
+                                onChange={(e) => {
+                                  if (e.target.checked) setSelectedCompanies([...selectedCompanies, c.name]);
+                                  else setSelectedCompanies(selectedCompanies.filter(id => id !== c.name));
+                                }}
+                              />
+                              {c.name}
+                            </label>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Obras</label>
-                    <div className="relative group">
-                      <div className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm cursor-pointer truncate">
+                    <div className="relative">
+                      <div 
+                        onClick={() => setIsReportProjectSelectorOpen(!isReportProjectSelectorOpen)}
+                        className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm cursor-pointer truncate flex items-center justify-between"
+                      >
                         {selectedProjects.length === 0 ? 'Todas' : `${selectedProjects.length} selecionadas`}
+                        <i className={`fas fa-chevron-${isReportProjectSelectorOpen ? 'up' : 'down'} text-[10px] text-slate-400`}></i>
                       </div>
-                      <div className="absolute top-full left-0 w-full bg-white border border-slate-200 rounded-lg shadow-xl z-50 hidden group-hover:block p-2 max-h-48 overflow-y-auto">
-                        {projects?.map(p => (
-                          <label key={p.id} className="flex items-center gap-2 p-2 hover:bg-slate-50 rounded cursor-pointer text-xs">
-                            <input 
-                              type="checkbox" 
-                              checked={selectedProjects.includes(p.name)}
-                              onChange={(e) => {
-                                if (e.target.checked) setSelectedProjects([...selectedProjects, p.name]);
-                                else setSelectedProjects(selectedProjects.filter(id => id !== p.name));
-                              }}
-                            />
-                            {p.name}
-                          </label>
-                        ))}
-                      </div>
+                      {isReportProjectSelectorOpen && (
+                        <div className="absolute top-full left-0 w-full bg-white border border-slate-200 rounded-lg shadow-xl z-50 p-2 max-h-48 overflow-y-auto animate-in fade-in zoom-in-95 duration-200">
+                          {projects?.map(p => (
+                            <label key={p.id} className="flex items-center gap-2 p-2 hover:bg-slate-50 rounded cursor-pointer text-xs">
+                              <input 
+                                type="checkbox" 
+                                checked={selectedProjects.includes(p.name)}
+                                onChange={(e) => {
+                                  if (e.target.checked) setSelectedProjects([...selectedProjects, p.name]);
+                                  else setSelectedProjects(selectedProjects.filter(id => id !== p.name));
+                                }}
+                              />
+                              {p.name}
+                            </label>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
