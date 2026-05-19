@@ -471,25 +471,59 @@ export const CostStructureEditor: React.FC<CostStructureEditorProps> = ({ costSt
                                                                     <div className="flex justify-between items-center">
                                                                       <div className="flex items-center gap-2">
                                                                         <span className="text-[9px] font-bold text-slate-500 uppercase">Selecionar Componentes</span>
-                                                                        <div className="flex gap-1">
-                                                                          <button 
-                                                                            onClick={() => {
-                                                                              const allIds = getOptionsForLevel(sv.linkedLevel!).map(opt => opt.id);
-                                                                              updateService(cc.id, stage.id, ss.id, sv.id, { linkedComponentIds: allIds });
-                                                                            }}
-                                                                            className="text-[8px] text-indigo-600 hover:underline font-bold"
-                                                                          >
-                                                                            Todos
-                                                                          </button>
-                                                                          <span className="text-[8px] text-slate-300">|</span>
-                                                                          <button 
-                                                                            onClick={() => {
-                                                                              updateService(cc.id, stage.id, ss.id, sv.id, { linkedComponentIds: [] });
-                                                                            }}
-                                                                            className="text-[8px] text-rose-500 hover:underline font-bold"
-                                                                          >
-                                                                            Nenhum
-                                                                          </button>
+                                                                        <div className="flex items-center gap-2 flex-wrap">
+                                                                          <div className="flex gap-1">
+                                                                            <button 
+                                                                              onClick={() => {
+                                                                                const allIds = getOptionsForLevel(sv.linkedLevel!).map(opt => opt.id);
+                                                                                updateService(cc.id, stage.id, ss.id, sv.id, { linkedComponentIds: allIds });
+                                                                              }}
+                                                                              className="text-[8px] text-indigo-600 hover:underline font-bold"
+                                                                            >
+                                                                              Todos
+                                                                            </button>
+                                                                            <span className="text-[8px] text-slate-300">|</span>
+                                                                            <button 
+                                                                              onClick={() => {
+                                                                                updateService(cc.id, stage.id, ss.id, sv.id, { linkedComponentIds: [] });
+                                                                              }}
+                                                                              className="text-[8px] text-rose-500 hover:underline font-bold"
+                                                                            >
+                                                                              Nenhum
+                                                                            </button>
+                                                                          </div>
+                                                                          <div className="h-3 w-px bg-slate-200 mx-1"></div>
+                                                                          <div className="flex gap-1.5 flex-wrap">
+                                                                            {(() => {
+                                                                              const options = getOptionsForLevel(sv.linkedLevel!);
+                                                                              const uniqueNames = Array.from(new Set(options.map(o => o.name))).sort();
+                                                                              return uniqueNames.map(name => {
+                                                                                const idsWithName = options.filter(o => o.name === name).map(o => o.id);
+                                                                                const isSelected = idsWithName.length > 0 && idsWithName.every(id => sv.linkedComponentIds?.includes(id));
+                                                                                return (
+                                                                                  <button
+                                                                                    key={name}
+                                                                                    type="button"
+                                                                                    onClick={() => {
+                                                                                      const current = sv.linkedComponentIds || [];
+                                                                                      let next;
+                                                                                      if (isSelected) {
+                                                                                        next = current.filter(id => !idsWithName.includes(id));
+                                                                                      } else {
+                                                                                        next = Array.from(new Set([...current, ...idsWithName]));
+                                                                                      }
+                                                                                      updateService(cc.id, stage.id, ss.id, sv.id, { linkedComponentIds: next });
+                                                                                    }}
+                                                                                    className={`text-[8px] px-1.5 py-0.5 rounded transition ${
+                                                                                      isSelected ? 'bg-indigo-600 text-white font-bold' : 'bg-slate-100 text-slate-600 hover:bg-slate-200 font-medium'
+                                                                                    }`}
+                                                                                  >
+                                                                                    {name}
+                                                                                  </button>
+                                                                                );
+                                                                              });
+                                                                            })()}
+                                                                          </div>
                                                                         </div>
                                                                       </div>
                                                                       <button onClick={() => setShowSelectorFor(null)} className="text-slate-400 hover:text-slate-600">
