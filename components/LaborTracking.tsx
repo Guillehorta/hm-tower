@@ -40,7 +40,7 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
   // New selection state
   const [executorType, setExecutorType] = useState<'Colaborador' | 'Prestador de Serviço'>('Colaborador');
   const [currentServicePath, setCurrentServicePath] = useState<string>('');
-  const [currentComponentPath, setCurrentComponentPath] = useState<string>('');
+  const [selectedComponentPaths, setSelectedComponentPaths] = useState<string[]>([]);
   const [selectedExecutorIds, setSelectedExecutorIds] = useState<string[]>([]);
   const [executorSearch, setExecutorSearch] = useState<string>('');
   
@@ -148,57 +148,68 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
   }, [currentDayTrackings]);
 
   const handleAddEntry = async () => {
-    if (!currentServicePath || !currentComponentPath || selectedExecutorIds.length === 0) {
-      onFeedback?.('error', `Selecione um serviço, um componente e pelo menos um ${executorType.toLowerCase()}.`);
+    if (!currentServicePath || selectedComponentPaths.length === 0 || selectedExecutorIds.length === 0) {
+      onFeedback?.('error', `Selecione um serviço, ao menos um componente e pelo menos um ${executorType.toLowerCase()}.`);
       return;
     }
 
-    // Check if this service/component already exists for today with this executor type
-    const existing = groupedEntries.find(e => e.servicePath === currentServicePath && e.componentPath === currentComponentPath && e.executorType === executorType);
-    if (existing) {
-      onFeedback?.('error', "Este serviço já foi adicionado para este componente hoje para este tipo de executor.");
+    // Check if any of these already exist
+    const duplicates = selectedComponentPaths.some(compPath => 
+      groupedEntries.some(e => e.servicePath === currentServicePath && e.componentPath === compPath && e.executorType === executorType)
+    );
+
+    if (duplicates) {
+      onFeedback?.('error', "Um ou mais componentes selecionados já possuem apontamento para este serviço hoje.");
       return;
     }
 
     try {
-      const newTrackings: LaborTracking[] = selectedExecutorIds.map(execId => ({
-        id: generateId(),
-        employeeId: execId,
-        executorType: executorType,
-        projectId: selectedProjectId,
-        date: selectedDate,
-        presence: 'Presente',
-        selections: [currentComponentPath],
-        costStructureSelections: [currentServicePath],
-        createdAt: Date.now()
-      }));
+      const newTrackings: LaborTracking[] = [];
+      
+      selectedComponentPaths.forEach(compPath => {
+        selectedExecutorIds.forEach(execId => {
+          newTrackings.push({
+            id: generateId(),
+            employeeId: execId,
+            executorType: executorType,
+            projectId: selectedProjectId,
+            date: selectedDate,
+            presence: 'Presente',
+            selections: [compPath],
+            costStructureSelections: [currentServicePath],
+            createdAt: Date.now()
+          });
+        });
+      });
 
       onSaveMany(newTrackings);
 
-      // Update Service Execution Real Start Date
-      const existingExec = serviceExecutions.find(ex => 
-        ex.projectId === selectedProjectId && 
-        ex.servicePath === currentServicePath && 
-        ex.componentPath === currentComponentPath
-      );
+      // Update Service Execution Real Start Dates
+      selectedComponentPaths.forEach(compPath => {
+        const existingExec = serviceExecutions.find(ex => 
+          ex.projectId === selectedProjectId && 
+          ex.servicePath === currentServicePath && 
+          ex.componentPath === compPath
+        );
 
-      if (!existingExec) {
-        onSaveExecution({
-          id: generateId(),
-          projectId: selectedProjectId,
-          servicePath: currentServicePath,
-          componentPath: currentComponentPath,
-          startDateReal: selectedDate
-        });
-      } else if (!existingExec.startDateReal) {
-        onSaveExecution({ ...existingExec, startDateReal: selectedDate });
-      }
+        if (!existingExec) {
+          onSaveExecution({
+            id: generateId(),
+            projectId: selectedProjectId,
+            servicePath: currentServicePath,
+            componentPath: compPath,
+            startDateReal: selectedDate
+          });
+        } else if (!existingExec.startDateReal) {
+          onSaveExecution({ ...existingExec, startDateReal: selectedDate });
+        }
+      });
 
       onFeedback?.('success', `${newTrackings.length} apontamento(s) realizado(s) com sucesso.`);
 
       // Reset selection
       setCurrentServicePath('');
-      setCurrentComponentPath('');
+      setSelectedComponentPaths([]);
       setSelectedExecutorIds([]);
       setExecutorSearch('');
     } catch (error) {
@@ -287,7 +298,7 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
                               onClick={() => {
                                 setCurrentServicePath(ssPath);
                                 setIsServiceSelectorOpen(false);
-                                setCurrentComponentPath(''); // Reset component when service changes
+                                setSelectedComponentPaths([]); // Reset components when service changes
                               }}
                               className={`text-left w-full px-2 py-1 rounded text-[10px] font-medium transition-colors ${
                                 currentServicePath === ssPath ? 'bg-indigo-500 text-white' : 'text-slate-600 hover:bg-slate-50'
@@ -304,7 +315,7 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
                                     onClick={() => {
                                       setCurrentServicePath(path);
                                       setIsServiceSelectorOpen(false);
-                                      setCurrentComponentPath(''); // Reset component when service changes
+                                      setSelectedComponentPaths([]); // Reset components when service changes
                                     }}
                                     className={`text-left px-2 py-1 rounded text-[10px] transition-colors ${
                                       currentServicePath === path ? 'bg-indigo-500 text-white' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
@@ -389,25 +400,80 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
 
     return (
       <div ref={componentDropdownRef} className="absolute z-50 mt-1 w-full bg-white border border-slate-200 rounded-xl shadow-2xl p-4 max-h-96 overflow-y-auto left-0 top-full">
+        <div className="flex justify-between items-center mb-3">
+          <span className="text-[10px] font-bold text-slate-500 uppercase">Selecione os Componentes</span>
+          <div className="flex gap-2">
+            <button 
+              onClick={() => {
+                const allPaths: string[] = [];
+                project.constructionUnits.forEach(cu => {
+                  if (getExecutionStatus(cu.id)) return;
+                  if (isLinked(cu.id, 'cu', cu) && (linkedIds.length === 0 || linkedIds.includes(cu.id))) {
+                    allPaths.push(cu.id);
+                  }
+                  cu.blocks?.forEach(b => {
+                    if (getExecutionStatus(`${cu.id}|${b.id}`)) return;
+                    if (isLinked(b.id, 'b', b) && (linkedIds.length === 0 || linkedIds.includes(b.id))) {
+                      allPaths.push(`${cu.id}|${b.id}`);
+                    }
+                    b.floors?.forEach(f => {
+                      if (getExecutionStatus(`${cu.id}|${b.id}|${f.id}`)) return;
+                      if (isLinked(f.id, 'f', f) && (linkedIds.length === 0 || linkedIds.includes(f.id))) {
+                        allPaths.push(`${cu.id}|${b.id}|${f.id}`);
+                      }
+                      f.units?.forEach(u => {
+                        if (getExecutionStatus(`${cu.id}|${b.id}|${f.id}|${u.id}`)) return;
+                        if (isLinked(u.id, 'u', u)) {
+                          allPaths.push(`${cu.id}|${b.id}|${f.id}|${u.id}`);
+                        }
+                      });
+                    });
+                  });
+                });
+                setSelectedComponentPaths(allPaths);
+              }}
+              className="text-[9px] font-bold text-indigo-600 hover:underline"
+            >
+              Todos
+            </button>
+            <button 
+              onClick={() => setSelectedComponentPaths([])}
+              className="text-[9px] font-bold text-rose-500 hover:underline"
+            >
+              Nenhum
+            </button>
+          </div>
+        </div>
         <div className="space-y-2">
           {project.constructionUnits?.filter(cu => isLinked(cu.id, 'cu', cu)).map(cu => {
             const cuPath = cu.id;
             const isSelectable = linkedIds.length === 0 || linkedIds.includes(cu.id);
             const status = getExecutionStatus(cuPath);
             const isBlocked = !!status;
+            const isSelected = selectedComponentPaths.includes(cuPath);
 
             return (
               <div key={cu.id} className="space-y-1">
                 {isSelectable ? (
                   <button
-                    onClick={() => { if (!isBlocked) { setCurrentComponentPath(cuPath); setIsComponentSelectorOpen(false); } }}
+                    onClick={() => { 
+                      if (!isBlocked) { 
+                        if (isSelected) setSelectedComponentPaths(selectedComponentPaths.filter(p => p !== cuPath));
+                        else setSelectedComponentPaths([...selectedComponentPaths, cuPath]);
+                      } 
+                    }}
                     disabled={isBlocked}
                     className={`text-left w-full px-2 py-1 rounded text-[10px] font-bold uppercase transition-colors flex justify-between items-center ${
-                      currentComponentPath === cuPath ? 'bg-indigo-500 text-white' : 
+                      isSelected ? 'bg-indigo-500 text-white' : 
                       isBlocked ? 'text-slate-300 cursor-not-allowed bg-slate-50' : 'text-indigo-600 hover:bg-slate-50'
                     }`}
                   >
-                    <span>{cu.name}</span>
+                    <div className="flex items-center gap-2">
+                      <div className={`w-3 h-3 rounded flex items-center justify-center border ${isSelected ? 'bg-white border-white' : 'bg-white border-indigo-200'}`}>
+                        {isSelected && <i className="fas fa-check text-indigo-500 text-[8px]"></i>}
+                      </div>
+                      <span>{cu.name}</span>
+                    </div>
                     {status && <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded ${status === 'Concluído' ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>{status}</span>}
                   </button>
                 ) : (
@@ -420,19 +486,30 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
                     const isBSelectable = linkedIds.length === 0 || linkedIds.includes(block.id);
                     const bStatus = getExecutionStatus(bPath);
                     const isBBlocked = !!bStatus;
+                    const isBSelected = selectedComponentPaths.includes(bPath);
 
                     return (
                       <div key={block.id} className="space-y-1">
                         {isBSelectable ? (
                           <button
-                            onClick={() => { if (!isBBlocked) { setCurrentComponentPath(bPath); setIsComponentSelectorOpen(false); } }}
+                            onClick={() => { 
+                              if (!isBBlocked) { 
+                                if (isBSelected) setSelectedComponentPaths(selectedComponentPaths.filter(p => p !== bPath));
+                                else setSelectedComponentPaths([...selectedComponentPaths, bPath]);
+                              } 
+                            }}
                             disabled={isBBlocked}
                             className={`text-left w-full px-2 py-1 rounded text-[10px] font-semibold italic transition-colors flex justify-between items-center ${
-                              currentComponentPath === bPath ? 'bg-indigo-500 text-white' : 
+                              isBSelected ? 'bg-indigo-500 text-white' : 
                               isBBlocked ? 'text-slate-300 cursor-not-allowed bg-slate-50' : 'text-slate-500 hover:bg-slate-50'
                             }`}
                           >
-                            <span>{block.name}</span>
+                            <div className="flex items-center gap-2">
+                              <div className={`w-3 h-3 rounded flex items-center justify-center border ${isBSelected ? 'bg-white border-white' : 'bg-white border-slate-200'}`}>
+                                {isBSelected && <i className="fas fa-check text-indigo-500 text-[8px]"></i>}
+                              </div>
+                              <span>{block.name}</span>
+                            </div>
                             {bStatus && <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded ${bStatus === 'Concluído' ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>{bStatus}</span>}
                           </button>
                         ) : (
@@ -445,19 +522,30 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
                             const isFSelectable = linkedIds.length === 0 || linkedIds.includes(floor.id);
                             const fStatus = getExecutionStatus(fPath);
                             const isFBlocked = !!fStatus;
+                            const isFSelected = selectedComponentPaths.includes(fPath);
 
                             return (
                               <div key={floor.id} className="space-y-1">
                                 {isFSelectable ? (
                                   <button
-                                    onClick={() => { if (!isFBlocked) { setCurrentComponentPath(fPath); setIsComponentSelectorOpen(false); } }}
+                                    onClick={() => { 
+                                      if (!isFBlocked) { 
+                                        if (isFSelected) setSelectedComponentPaths(selectedComponentPaths.filter(p => p !== fPath));
+                                        else setSelectedComponentPaths([...selectedComponentPaths, fPath]);
+                                      } 
+                                    }}
                                     disabled={isFBlocked}
                                     className={`text-left w-full px-2 py-1 rounded text-[10px] font-medium transition-colors flex justify-between items-center ${
-                                      currentComponentPath === fPath ? 'bg-indigo-500 text-white' : 
+                                      isFSelected ? 'bg-indigo-500 text-white' : 
                                       isFBlocked ? 'text-slate-200 cursor-not-allowed bg-slate-50' : 'text-slate-400 hover:bg-slate-50'
                                     }`}
                                   >
-                                    <span>{floor.name}</span>
+                                    <div className="flex items-center gap-2">
+                                      <div className={`w-3 h-3 rounded flex items-center justify-center border ${isFSelected ? 'bg-white border-white' : 'bg-white border-slate-200'}`}>
+                                        {isFSelected && <i className="fas fa-check text-indigo-500 text-[8px]"></i>}
+                                      </div>
+                                      <span>{floor.name}</span>
+                                    </div>
                                     {fStatus && <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded ${fStatus === 'Concluído' ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>{fStatus}</span>}
                                   </button>
                                 ) : (
@@ -469,18 +557,29 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
                                     const path = `${cu.id}|${block.id}|${floor.id}|${unit.id}`;
                                     const uStatus = getExecutionStatus(path);
                                     const isUBlocked = !!uStatus;
+                                    const isUSelected = selectedComponentPaths.includes(path);
 
                                     return (
                                       <button
                                         key={unit.id}
-                                        onClick={() => { if (!isUBlocked) { setCurrentComponentPath(path); setIsComponentSelectorOpen(false); } }}
+                                        onClick={() => { 
+                                          if (!isUBlocked) { 
+                                            if (isUSelected) setSelectedComponentPaths(selectedComponentPaths.filter(p => p !== path));
+                                            else setSelectedComponentPaths([...selectedComponentPaths, path]);
+                                          } 
+                                        }}
                                         disabled={isUBlocked}
                                         className={`text-left px-2 py-1 rounded text-[10px] transition-colors flex justify-between items-center ${
-                                          currentComponentPath === path ? 'bg-indigo-500 text-white' : 
+                                          isUSelected ? 'bg-indigo-500 text-white' : 
                                           isUBlocked ? 'text-slate-300 cursor-not-allowed bg-slate-50' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
                                         }`}
                                       >
-                                        <span>{unit.name}</span>
+                                        <div className="flex items-center gap-2">
+                                          <div className={`w-3 h-3 rounded flex items-center justify-center border ${isUSelected ? 'bg-white border-white' : 'bg-white border-slate-200'}`}>
+                                            {isUSelected && <i className="fas fa-check text-indigo-500 text-[8px]"></i>}
+                                          </div>
+                                          <span>{unit.name}</span>
+                                        </div>
                                         {uStatus && <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded ${uStatus === 'Concluído' ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>{uStatus}</span>}
                                       </button>
                                     );
@@ -498,6 +597,17 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
             );
           })}
         </div>
+        {selectedComponentPaths.length > 0 && (
+          <div className="mt-4 pt-3 border-t border-slate-100 flex justify-between items-center">
+            <span className="text-[10px] font-bold text-indigo-600">{selectedComponentPaths.length} componente(s) selecionado(s)</span>
+            <button 
+              onClick={() => setIsComponentSelectorOpen(false)}
+              className="text-[10px] font-bold text-slate-400 hover:text-slate-600 uppercase"
+            >
+              Confirmar
+            </button>
+          </div>
+        )}
       </div>
     );
   };
@@ -608,7 +718,7 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
               onChange={(e) => {
                 setSelectedProjectId(e.target.value);
                 setCurrentServicePath('');
-                setCurrentComponentPath('');
+                setSelectedComponentPaths([]);
                 setSelectedExecutorIds([]);
               }}
               className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
@@ -695,8 +805,10 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
                   }}
                   className={`w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm cursor-pointer hover:border-indigo-300 transition-all flex justify-between items-center ${!currentServicePath ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
-                  <span className={currentComponentPath ? 'text-slate-700' : 'text-slate-400 italic'}>
-                    {currentComponentPath ? getComponentName(currentComponentPath) : 'Selecione um componente'}
+                  <span className={selectedComponentPaths.length > 0 ? 'text-slate-700' : 'text-slate-400 italic'}>
+                    {selectedComponentPaths.length > 0 
+                      ? (selectedComponentPaths.length === 1 ? getComponentName(selectedComponentPaths[0]) : `${selectedComponentPaths.length} selecionados`)
+                      : 'Selecione componente(s)'}
                   </span>
                   <i className={`fas fa-chevron-down text-xs text-slate-400 transition-transform ${isComponentSelectorOpen ? 'rotate-180' : ''}`}></i>
                 </div>
