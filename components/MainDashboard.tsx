@@ -36,6 +36,65 @@ export const MainDashboard: React.FC<MainDashboardProps> = ({
   const [dashboardView, setDashboardView] = useState<DashboardViewType>('daily');
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
 
+  const formatDateBR = (dateStr?: string) => {
+    if (!dateStr) return '-';
+    if (dateStr.includes('/')) return dateStr;
+    const parts = dateStr.split('-');
+    if (parts.length === 3) {
+      return `${parts[2]}/${parts[1]}/${parts[0]}`;
+    }
+    try {
+      const d = new Date(dateStr + 'T00:00:00');
+      if (!isNaN(d.getTime())) {
+        return d.toLocaleDateString('pt-BR');
+      }
+    } catch (e) {}
+    return dateStr;
+  };
+
+  const getComponentName = (componentPath: string, projectId: string) => {
+    const project = projects.find(p => p.id === projectId);
+    if (!project) return componentPath;
+    
+    const parts = componentPath.split('|');
+    const cu = project.constructionUnits.find(u => u.id === parts[0]);
+    if (!cu) return componentPath;
+    if (parts.length === 1) return cu.name;
+    
+    const block = cu.blocks.find(b => b.id === parts[1]);
+    if (!block) return cu.name;
+    if (parts.length === 2) return `${cu.name} > ${block.name}`;
+    
+    const floor = block.floors.find(f => f.id === parts[2]);
+    if (!floor) return `${cu.name} > ${block.name}`;
+    if (parts.length === 3) return `${cu.name} > ${block.name} > ${floor.name}`;
+    
+    const unit = floor.units.find(u => u.id === parts[3]);
+    if (!unit) return `${cu.name} > ${block.name} > ${floor.name}`;
+    return `${cu.name} > ${block.name} > ${floor.name} > ${unit.name}`;
+  };
+
+  const getServiceName = (servicePath: string, projectId: string) => {
+    const project = projects.find(p => p.id === projectId);
+    if (!project || !project.costStructure) return servicePath.split('|').pop() || '';
+    
+    const parts = servicePath.split('|');
+    const svId = parts[parts.length - 1];
+    
+    for (const cc of project.costStructure) {
+      for (const s of cc.stages) {
+        for (const ss of s.subStages) {
+          for (const sv of ss.services) {
+            if (sv.id === svId) {
+              return sv.name;
+            }
+          }
+        }
+      }
+    }
+    return svId;
+  };
+
   const navigatePeriod = (direction: number) => {
     const newDate = new Date(selectedDate);
     if (dashboardView === 'daily') {
@@ -101,6 +160,59 @@ export const MainDashboard: React.FC<MainDashboardProps> = ({
        // In a real scenario we'd check if strictly in the date range if they have timestamps
        return isCorrectProject;
     });
+
+    // Helper to parse date consistently (handling YYYY-MM-DD or DD/MM/YYYY)
+    const parseRealDate = (dateStr?: string) => {
+      if (!dateStr) return null;
+      if (dateStr.includes('/')) {
+        const parts = dateStr.split('/');
+        if (parts.length === 3) {
+          return new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+        }
+      }
+      const d = new Date(dateStr);
+      return isNaN(d.getTime()) ? null : d;
+    };
+
+    // Filter and map services in this period (em andamento ou concluídos)
+    const periodServices = filteredExecutions.map(exec => {
+      const startReal = parseRealDate(exec.startDateReal);
+      const endReal = parseRealDate(exec.endDateReal);
+
+      // If both are missing, we fall back to use status if initialized
+      if (!startReal && !endReal) {
+        if (exec.status === 'Iniciado' || exec.status === 'Concluido') {
+          return {
+            ...exec,
+            calculatedStatus: exec.status as 'Iniciado' | 'Concluido'
+          };
+        }
+        return null;
+      }
+
+      const startT = startReal ? startReal.getTime() : 0;
+      const endT = endReal ? endReal.getTime() : null;
+
+      // Must have started before or during the selected period
+      if (startReal && startT > endTimestamp) return null;
+
+      // Must not have ended before the selected period started
+      if (endT !== null && endT < startTimestamp) return null;
+
+      // Calculate status relative to this selected period
+      let calculatedStatus: 'Iniciado' | 'Concluido' = 'Iniciado';
+      if (endT !== null && endT >= startTimestamp && endT <= endTimestamp) {
+        calculatedStatus = 'Concluido';
+      } else if (exec.status === 'Concluido' && endT === null) {
+        // Fallback if marked as Concluido but has no endDateReal
+        calculatedStatus = 'Concluido';
+      }
+
+      return {
+        ...exec,
+        calculatedStatus
+      };
+    }).filter((exec): exec is NonNullable<typeof exec> => exec !== null);
 
     const activeServices = filteredExecutions.filter(exec => exec.status === 'Iniciado');
 
@@ -174,6 +286,7 @@ export const MainDashboard: React.FC<MainDashboardProps> = ({
       absentEmployees,
       totalPresences,
       activeServices,
+      periodServices,
       totalServicesEvaluated,
       nonConformitiesCount,
       ncServices,
@@ -432,27 +545,49 @@ export const MainDashboard: React.FC<MainDashboardProps> = ({
 
         <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-200">
            <div className="flex items-center justify-between mb-8">
-              <h4 className="text-sm font-black text-slate-800 uppercase tracking-tight">Atividades em Execução ({periodStats.activeServices.length})</h4>
+              <h4 className="text-sm font-black text-slate-800 uppercase tracking-tight">Atividades no Período ({periodStats.periodServices.length})</h4>
               <button className="text-[10px] font-black text-indigo-600 uppercase tracking-widest hover:underline">Ver Mapa da Obra</button>
            </div>
            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {periodStats.activeServices.length === 0 ? (
-                 <div className="col-span-full py-12 text-center text-xs text-slate-400 italic">Nenhum serviço em execução neste momento.</div>
+              {periodStats.periodServices.length === 0 ? (
+                 <div className="col-span-full py-12 text-center text-xs text-slate-400 italic">Nenhum serviço em andamento ou concluído neste período.</div>
               ) : (
-                 periodStats.activeServices.map(exec => (
-                    <div key={exec.id} className="p-5 bg-slate-50 rounded-3xl border border-slate-100 flex flex-col justify-between group hover:border-amber-200 transition-all">
-                       <div>
-                          <div className="text-xs font-black text-slate-800 mb-1">{exec.servicePath.split('|').pop()}</div>
-                          <div className="text-[10px] text-slate-400 font-bold uppercase tracking-tight flex items-center gap-1">
-                             <MapPin className="w-3 h-3" /> {projects.find(p => p.id === exec.projectId)?.name}
+                 periodStats.periodServices.map(exec => {
+                    const isConcluido = exec.calculatedStatus === 'Concluido';
+                    return (
+                       <div key={exec.id} className={`p-5 bg-slate-50 rounded-3xl border flex flex-col justify-between group transition-all ${isConcluido ? 'border-emerald-100 hover:border-emerald-300' : 'border-slate-100 hover:border-amber-200'}`}>
+                          <div>
+                             <div className="text-xs font-black text-slate-800 mb-1">
+                                {getServiceName(exec.servicePath, exec.projectId)}
+                             </div>
+                             <div className="text-[10px] text-slate-500 font-bold mb-1 leading-normal">
+                                <span className="text-slate-400 font-medium">Unidade:</span> {getComponentName(exec.componentPath, exec.projectId)}
+                             </div>
+                             <div className="text-[10px] text-slate-400 font-bold uppercase tracking-tight flex items-center gap-1">
+                                <MapPin className="w-3 h-3 text-slate-300" /> {projects.find(p => p.id === exec.projectId)?.name}
+                             </div>
+                          </div>
+                          <div className="mt-4 pt-4 border-t border-slate-200 flex items-center justify-between">
+                             {isConcluido ? (
+                                <span className="text-[9px] font-black text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-lg uppercase flex items-center gap-1 shrink-0">
+                                   <CheckCircle2 className="w-3 h-3 text-emerald-500" /> Concluído
+                                </span>
+                             ) : (
+                                <span className="text-[9px] font-black text-amber-600 bg-amber-50 px-2.5 py-1 rounded-lg uppercase flex items-center gap-1 shrink-0">
+                                   <HardHat className="w-3 h-3 text-amber-500" /> Em Andamento
+                                </span>
+                             )}
+                             <span className="text-[10px] text-slate-400 font-bold max-w-[130px] truncate text-right">
+                                {isConcluido ? (
+                                   <>Ext: {formatDateBR(exec.startDateReal)} a {formatDateBR(exec.endDateReal)}</>
+                                ) : (
+                                   <>Início: {formatDateBR(exec.startDateReal)}</>
+                                )}
+                             </span>
                           </div>
                        </div>
-                       <div className="mt-4 pt-4 border-t border-slate-200 flex items-center justify-between">
-                          <span className="text-[9px] font-black text-amber-600 bg-amber-50 px-2 py-1 rounded-lg uppercase">Em Andamento</span>
-                          <span className="text-[10px] text-slate-400 font-bold">{exec.startDateReal}</span>
-                       </div>
-                    </div>
-                 ))
+                    );
+                 })
               )}
            </div>
         </div>
@@ -494,8 +629,15 @@ export const MainDashboard: React.FC<MainDashboardProps> = ({
                     periodStats.ncServices.map(exec => (
                        <div key={exec.id} className="p-4 bg-rose-50 border border-rose-100 rounded-2xl flex items-center justify-between">
                           <div>
-                             <div className="text-xs font-black text-rose-800">{exec.servicePath.split('|').pop()}</div>
-                             <div className="text-[9px] text-rose-400 font-bold uppercase">{projects.find(p => p.id === exec.projectId)?.name}</div>
+                             <div className="text-xs font-black text-rose-800">
+                                {getServiceName(exec.servicePath, exec.projectId)}
+                             </div>
+                             <div className="text-[10px] text-rose-600 font-bold mb-1 leading-normal">
+                                <span className="text-rose-400 font-medium">Unidade:</span> {getComponentName(exec.componentPath, exec.projectId)}
+                             </div>
+                             <div className="text-[9px] text-rose-400 font-bold uppercase flex items-center gap-1">
+                                <MapPin className="w-3 h-3 text-rose-300" /> {projects.find(p => p.id === exec.projectId)?.name}
+                             </div>
                           </div>
                           <div className="text-right">
                              <div className="text-[10px] font-black text-white bg-rose-500 px-2 py-1 rounded-lg uppercase">Ação Requerida</div>

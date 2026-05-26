@@ -223,6 +223,18 @@ export interface MeasurementItem {
   measuredQuantity: number;
   servicePath?: string;
   productivity?: number;
+  totalServices?: number;
+}
+
+export interface ExtraMeasurementItem {
+  id: string;
+  description: string;
+  type: 'acréscimo' | 'desconto';
+  category: 'Ajuda de custo' | 'Ajuda de transporte' | 'Aluguel' | 'Alimentação' | 'Salário' | 'VA' | 'VT' | 'Desconto' | 'Reembolso';
+  stagePath?: string;
+  prevAccumulated: number;
+  measuredValue: number;
+  currentAccumulated: number;
 }
 
 export interface ContractMeasurement {
@@ -234,6 +246,7 @@ export interface ContractMeasurement {
   endDate?: string;
   dueDate?: string;
   items: MeasurementItem[];
+  extraItems?: ExtraMeasurementItem[];
   observations?: string;
   status: 'draft' | 'completed';
   createdAt: number;
@@ -352,4 +365,11 @@ export interface ServiceExecution {
       [subItemId: string]: 'NC' | 'C' | 'NA' | 'CR'; // NC: Não Conforme, C: Conforme, NA: Não Aplicável, CR: Conforme após reinspeção
     }
   };
+}
+
+export interface SecullumEmployee {
+  id: string; // The Secullum remote ID
+  data: any; // Raw JSON from API
+  lastImportedAt: number;
+  linkedEmployeeId?: string; // ID of the local Employee record if linked
 }

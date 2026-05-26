@@ -108,9 +108,18 @@ service cloud.firestore {
              data.date is string && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$');
     }
 
+    function isValidSecullumEmployee(data) {
+      return data.id is string && data.data is map && data.lastImportedAt is number;
+    }
+
     // ===============================================================
     // Rules
     // ===============================================================
+
+    match /secullum_employees/{id} {
+      allow read: if isAnyRole();
+      allow write: if isAnyRole() && isValidSecullumEmployee(request.resource.data);
+    }
 
     match /weatherlogs/{id} {
       allow read: if isAuthenticated();

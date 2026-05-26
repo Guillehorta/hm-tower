@@ -39,7 +39,7 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
   
   // New selection state
   const [executorType, setExecutorType] = useState<'Colaborador' | 'Prestador de Serviço'>('Colaborador');
-  const [currentServicePath, setCurrentServicePath] = useState<string>('');
+  const [currentServicePaths, setCurrentServicePaths] = useState<string[]>([]);
   const [selectedComponentPaths, setSelectedComponentPaths] = useState<string[]>([]);
   const [selectedExecutorIds, setSelectedExecutorIds] = useState<string[]>([]);
   const [executorSearch, setExecutorSearch] = useState<string>('');
@@ -148,36 +148,40 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
   }, [currentDayTrackings]);
 
   const handleAddEntry = async () => {
-    if (!currentServicePath || selectedComponentPaths.length === 0 || selectedExecutorIds.length === 0) {
-      onFeedback?.('error', `Selecione um serviço, ao menos um componente e pelo menos um ${executorType.toLowerCase()}.`);
+    if (currentServicePaths.length === 0 || selectedComponentPaths.length === 0 || selectedExecutorIds.length === 0) {
+      onFeedback?.('error', `Selecione ao menos um serviço, um componente e um ${executorType.toLowerCase()}.`);
       return;
     }
 
-    // Check if any of these already exist
-    const duplicates = selectedComponentPaths.some(compPath => 
-      groupedEntries.some(e => e.servicePath === currentServicePath && e.componentPath === compPath && e.executorType === executorType)
+    // Check for duplicates
+    const duplicates = currentServicePaths.some(sPath => 
+      selectedComponentPaths.some(compPath => 
+        groupedEntries.some(e => e.servicePath === sPath && e.componentPath === compPath && e.executorType === executorType)
+      )
     );
 
     if (duplicates) {
-      onFeedback?.('error', "Um ou mais componentes selecionados já possuem apontamento para este serviço hoje.");
+      onFeedback?.('error', "Alguns dos itens selecionados já possuem apontamento para estes serviços hoje.");
       return;
     }
 
     try {
       const newTrackings: LaborTracking[] = [];
       
-      selectedComponentPaths.forEach(compPath => {
-        selectedExecutorIds.forEach(execId => {
-          newTrackings.push({
-            id: generateId(),
-            employeeId: execId,
-            executorType: executorType,
-            projectId: selectedProjectId,
-            date: selectedDate,
-            presence: 'Presente',
-            selections: [compPath],
-            costStructureSelections: [currentServicePath],
-            createdAt: Date.now()
+      currentServicePaths.forEach(sPath => {
+        selectedComponentPaths.forEach(compPath => {
+          selectedExecutorIds.forEach(execId => {
+            newTrackings.push({
+              id: generateId(),
+              employeeId: execId,
+              executorType: executorType,
+              projectId: selectedProjectId,
+              date: selectedDate,
+              presence: 'Presente',
+              selections: [compPath],
+              costStructureSelections: [sPath],
+              createdAt: Date.now()
+            });
           });
         });
       });
@@ -185,30 +189,32 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
       onSaveMany(newTrackings);
 
       // Update Service Execution Real Start Dates
-      selectedComponentPaths.forEach(compPath => {
-        const existingExec = serviceExecutions.find(ex => 
-          ex.projectId === selectedProjectId && 
-          ex.servicePath === currentServicePath && 
-          ex.componentPath === compPath
-        );
+      currentServicePaths.forEach(sPath => {
+        selectedComponentPaths.forEach(compPath => {
+          const existingExec = serviceExecutions.find(ex => 
+            ex.projectId === selectedProjectId && 
+            ex.servicePath === sPath && 
+            ex.componentPath === compPath
+          );
 
-        if (!existingExec) {
-          onSaveExecution({
-            id: generateId(),
-            projectId: selectedProjectId,
-            servicePath: currentServicePath,
-            componentPath: compPath,
-            startDateReal: selectedDate
-          });
-        } else if (!existingExec.startDateReal) {
-          onSaveExecution({ ...existingExec, startDateReal: selectedDate });
-        }
+          if (!existingExec) {
+            onSaveExecution({
+              id: generateId(),
+              projectId: selectedProjectId,
+              servicePath: sPath,
+              componentPath: compPath,
+              startDateReal: selectedDate
+            });
+          } else if (!existingExec.startDateReal) {
+            onSaveExecution({ ...existingExec, startDateReal: selectedDate });
+          }
+        });
       });
 
       onFeedback?.('success', `${newTrackings.length} apontamento(s) realizado(s) com sucesso.`);
 
       // Reset selection
-      setCurrentServicePath('');
+      setCurrentServicePaths([]);
       setSelectedComponentPaths([]);
       setSelectedExecutorIds([]);
       setExecutorSearch('');
@@ -265,10 +271,13 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
   };
 
   const getExecutionStatus = (compPath: string) => {
-    if (!selectedProjectId || !currentServicePath) return null;
+    if (!selectedProjectId || currentServicePaths.length === 0) return null;
+    // For status check, we check if ALL selected services are completed or in progress for this component
+    // If multiple services selected, we show the most "advanced" status or the one from the first service
+    const mainServicePath = currentServicePaths[0];
     const ex = serviceExecutions.find(e => 
       e.projectId === selectedProjectId && 
-      e.servicePath === currentServicePath && 
+      e.servicePath === mainServicePath && 
       e.componentPath === compPath
     );
     if (ex?.endDateReal) return 'Concluído';
@@ -279,48 +288,131 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
   const renderServiceSelector = () => {
     if (!project || !project.costStructure) return null;
 
+    const getAllServicePathsInCC = (cc: any) => {
+      const paths: string[] = [];
+      cc.stages?.forEach((st: any) => {
+        st.subStages?.forEach((ss: any) => {
+          paths.push(`${cc.id}|${st.id}|${ss.id}`); // SubStage path
+          ss.services?.forEach((sv: any) => {
+            paths.push(`${cc.id}|${st.id}|${ss.id}|${sv.id}`);
+          });
+        });
+      });
+      return paths;
+    };
+
+    const getAllServicePathsInStage = (cc: any, st: any) => {
+      const paths: string[] = [];
+      st.subStages?.forEach((ss: any) => {
+        paths.push(`${cc.id}|${st.id}|${ss.id}`);
+        ss.services?.forEach((sv: any) => {
+          paths.push(`${cc.id}|${st.id}|${ss.id}|${sv.id}`);
+        });
+      });
+      return paths;
+    };
+
+    const toggleMultiSelection = (paths: string[]) => {
+      const allSelected = paths.every(p => currentServicePaths.includes(p));
+      if (allSelected) {
+        setCurrentServicePaths(prev => prev.filter(p => !paths.includes(p)));
+      } else {
+        const newPaths = [...currentServicePaths];
+        paths.forEach(p => {
+          if (!newPaths.includes(p)) newPaths.push(p);
+        });
+        setCurrentServicePaths(newPaths);
+      }
+    };
+
     return (
       <div ref={serviceDropdownRef} className="absolute z-50 mt-1 w-full bg-white border border-slate-200 rounded-xl shadow-2xl p-4 max-h-96 overflow-y-auto left-0 top-full">
-        <div className="space-y-2">
+        <div className="flex justify-between items-center mb-3">
+          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Estrutura de Custo</span>
+          <div className="flex gap-2">
+            <button 
+              onClick={() => {
+                const all: string[] = [];
+                project.costStructure?.forEach(cc => all.push(...getAllServicePathsInCC(cc)));
+                setCurrentServicePaths(all);
+              }}
+              className="text-[9px] font-bold text-indigo-600 hover:underline"
+            >
+              Todos
+            </button>
+            <button 
+              onClick={() => setCurrentServicePaths([])}
+              className="text-[9px] font-bold text-rose-500 hover:underline"
+            >
+              Nenhum
+            </button>
+          </div>
+        </div>
+        <div className="space-y-4">
           {project.costStructure.map(cc => (
             <div key={cc.id} className="space-y-1">
-              <div className="font-bold text-[10px] text-indigo-600 uppercase tracking-wider">{cc.name}</div>
-              <div className="pl-2 space-y-1 border-l border-slate-100">
+              <div className="flex items-center justify-between group">
+                <div className="font-bold text-[10px] text-indigo-600 uppercase tracking-wider flex items-center gap-2">
+                  <i className="fas fa-wallet text-[8px]"></i>
+                  {cc.name}
+                </div>
+                <button 
+                  onClick={() => toggleMultiSelection(getAllServicePathsInCC(cc))}
+                  className="text-[9px] font-bold text-slate-300 group-hover:text-indigo-600 transition-colors"
+                >
+                  {getAllServicePathsInCC(cc).every(p => currentServicePaths.includes(p)) ? 'Deselecionar' : 'Selecionar Tudo'}
+                </button>
+              </div>
+              <div className="pl-2 space-y-2 border-l border-slate-100">
                 {cc.stages?.map(stage => (
                   <div key={stage.id} className="space-y-1">
-                    <div className="text-[10px] font-semibold text-slate-500 italic">{stage.name}</div>
+                    <div className="flex items-center justify-between group/st">
+                      <div className="text-[10px] font-semibold text-slate-500 italic">{stage.name}</div>
+                      <button 
+                        onClick={() => toggleMultiSelection(getAllServicePathsInStage(cc, stage))}
+                        className="text-[8px] font-bold text-slate-300 group-hover/st:text-slate-500"
+                      >
+                        {getAllServicePathsInStage(cc, stage).every(p => currentServicePaths.includes(p)) ? 'D' : 'S'}
+                      </button>
+                    </div>
                     <div className="pl-2 space-y-1 border-l border-slate-100">
                       {stage.subStages?.map(ss => {
                         const ssPath = `${cc.id}|${stage.id}|${ss.id}`;
+                        const isSSSelected = currentServicePaths.includes(ssPath);
                         return (
                           <div key={ss.id} className="space-y-1">
                             <button 
                               onClick={() => {
-                                setCurrentServicePath(ssPath);
-                                setIsServiceSelectorOpen(false);
-                                setSelectedComponentPaths([]); // Reset components when service changes
+                                if (isSSSelected) setCurrentServicePaths(prev => prev.filter(p => p !== ssPath));
+                                else setCurrentServicePaths([...currentServicePaths, ssPath]);
                               }}
-                              className={`text-left w-full px-2 py-1 rounded text-[10px] font-medium transition-colors ${
-                                currentServicePath === ssPath ? 'bg-indigo-500 text-white' : 'text-slate-600 hover:bg-slate-50'
+                              className={`text-left w-full px-2 py-1 rounded text-[10px] font-medium transition-colors flex items-center gap-2 ${
+                                isSSSelected ? 'bg-indigo-500 text-white shadow-sm shadow-indigo-200' : 'text-slate-600 hover:bg-slate-50'
                               }`}
                             >
+                              <div className={`w-3 h-3 rounded flex items-center justify-center border ${isSSSelected ? 'bg-white border-white text-indigo-500' : 'bg-white border-slate-200'}`}>
+                                {isSSSelected && <i className="fas fa-check text-[8px]"></i>}
+                              </div>
                               {ss.name}
                             </button>
                             <div className="pl-2 grid grid-cols-1 gap-1">
                               {ss.services?.map(sv => {
                                 const path = `${cc.id}|${stage.id}|${ss.id}|${sv.id}`;
+                                const isSelected = currentServicePaths.includes(path);
                                 return (
                                   <button
                                     key={sv.id}
                                     onClick={() => {
-                                      setCurrentServicePath(path);
-                                      setIsServiceSelectorOpen(false);
-                                      setSelectedComponentPaths([]); // Reset components when service changes
+                                      if (isSelected) setCurrentServicePaths(prev => prev.filter(p => p !== path));
+                                      else setCurrentServicePaths([...currentServicePaths, path]);
                                     }}
-                                    className={`text-left px-2 py-1 rounded text-[10px] transition-colors ${
-                                      currentServicePath === path ? 'bg-indigo-500 text-white' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                                    className={`text-left px-2 py-1 rounded text-[10px] flex items-center gap-2 transition-colors ${
+                                      isSelected ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
                                     }`}
                                   >
+                                    <div className={`w-3 h-3 rounded flex items-center justify-center border ${isSelected ? 'bg-white border-white text-indigo-600' : 'bg-white border-slate-200'}`}>
+                                      {isSelected && <i className="fas fa-check text-[8px]"></i>}
+                                    </div>
                                     {sv.name}
                                   </button>
                                 );
@@ -341,10 +433,10 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
   };
 
   const renderComponentSelector = () => {
-    if (!project || !currentServicePath) return null;
+    if (!project || currentServicePaths.length === 0) return null;
 
-    // Find linked components for the selected service
-    const parts = currentServicePath.split('|');
+    // Find linked components for the selected service (using the first selected service as context)
+    const parts = currentServicePaths[0].split('|');
     const cc = project.costStructure?.find(c => c.id === parts[0]);
     const stage = cc?.stages.find(s => s.id === parts[1]);
     const ss = stage?.subStages.find(s => s.id === parts[2]);
@@ -717,7 +809,7 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
               value={selectedProjectId}
               onChange={(e) => {
                 setSelectedProjectId(e.target.value);
-                setCurrentServicePath('');
+                setCurrentServicePaths([]);
                 setSelectedComponentPaths([]);
                 setSelectedExecutorIds([]);
               }}
@@ -784,8 +876,10 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
                   onClick={() => setIsServiceSelectorOpen(!isServiceSelectorOpen)}
                   className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm cursor-pointer hover:border-indigo-300 transition-all flex justify-between items-center"
                 >
-                  <span className={currentServicePath ? 'text-slate-700' : 'text-slate-400 italic'}>
-                    {currentServicePath ? getServiceName(currentServicePath) : 'Selecione um serviço'}
+                  <span className={currentServicePaths.length > 0 ? 'text-slate-700' : 'text-slate-400 italic'}>
+                    {currentServicePaths.length === 0 ? 'Selecione serviço(s)' : 
+                     currentServicePaths.length === 1 ? getServiceName(currentServicePaths[0]) : 
+                     `${currentServicePaths.length} selecionados`}
                   </span>
                   <i className={`fas fa-chevron-down text-xs text-slate-400 transition-transform ${isServiceSelectorOpen ? 'rotate-180' : ''}`}></i>
                 </div>
@@ -797,13 +891,13 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
                 <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Componente EAP</label>
                 <div 
                   onClick={() => {
-                    if (!currentServicePath) {
-                      onFeedback?.('error', "Selecione um serviço primeiro.");
+                    if (currentServicePaths.length === 0) {
+                      onFeedback?.('error', "Selecione ao menos um serviço primeiro.");
                       return;
                     }
                     setIsComponentSelectorOpen(!isComponentSelectorOpen);
                   }}
-                  className={`w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm cursor-pointer hover:border-indigo-300 transition-all flex justify-between items-center ${!currentServicePath ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  className={`w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm cursor-pointer hover:border-indigo-300 transition-all flex justify-between items-center ${currentServicePaths.length === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   <span className={selectedComponentPaths.length > 0 ? 'text-slate-700' : 'text-slate-400 italic'}>
                     {selectedComponentPaths.length > 0 

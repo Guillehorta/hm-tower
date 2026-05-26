@@ -18,8 +18,10 @@ import { TimeTrackingModule } from './components/TimeTrackingModule';
 import { WeatherView } from './components/WeatherView';
 import { MainDashboard } from './components/MainDashboard';
 import { weatherService } from './services/weatherService';
+import { secullumService } from './services/secullumService';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { auth, db, firebaseConfig } from './src/firebase';
+import axios from 'axios';
 import { 
   signInWithPopup, 
   GoogleAuthProvider, 
@@ -27,9 +29,10 @@ import {
   signOut,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
-  getAuth
+  getAuth,
+  sendPasswordResetEmail
 } from 'firebase/auth';
-import { Employee, TimeLog, LogType, Location, Company, Project, JobFunction, User, UserRole, ConstructionUnit, LaborTracking, DailyMeasurement, CostCenter, Contract, ContractMeasurement, Supplier, ServiceExecution, FVS, WeatherLog } from './types';
+import { Employee, TimeLog, LogType, Location, Company, Project, JobFunction, User, UserRole, ConstructionUnit, LaborTracking, DailyMeasurement, CostCenter, Contract, ContractMeasurement, Supplier, ServiceExecution, FVS, WeatherLog, SecullumEmployee } from './types';
 
 type ViewType = 'dashboard' | 'register' | 'admin' | 'companies' | 'projects' | 'functions' | 'daily_report' | 'period_report' | 'users' | 'login' | 'measurements' | 'suppliers' | 'employees' | 'planning' | 'quality' | 'labor_tracking' | 'weather';
 
@@ -61,8 +64,13 @@ const App: React.FC = () => {
   const [serviceExecutions, setServiceExecutions] = useState<ServiceExecution[]>([]);
   const [fvsList, setFvsList] = useState<FVS[]>([]);
   const [weatherLogs, setWeatherLogs] = useState<WeatherLog[]>([]);
+  const [secullumEmployees, setSecullumEmployees] = useState<SecullumEmployee[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const [diagnosticEmail, setDiagnosticEmail] = useState('');
+  const [isCheckingDiagnostic, setIsCheckingDiagnostic] = useState(false);
+  const [isPurgingDiagnostic, setIsPurgingDiagnostic] = useState(false);
+  const [diagnosticResult, setDiagnosticResult] = useState<{ exists?: boolean; uid?: string; email?: string; providerId?: string; isApiDisabled?: boolean; link?: string; message?: string } | null>(null);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error', msg: string } | null>(null);
   const [confirmModal, setConfirmModal] = useState<{
     isOpen: boolean;
@@ -128,7 +136,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
-        // Find or create user in Firestore
+        // Find user in Firestore
         let user = await storageService.getUser(firebaseUser.uid);
         
         if (!user && firebaseUser.email) {
@@ -146,20 +154,32 @@ const App: React.FC = () => {
           }
         }
 
+        // Restrict access ONLY if they exist in the users collection/table in Firestore (except the bootstrap admin)
         if (!user) {
-          user = {
-            id: firebaseUser.uid,
-            name: firebaseUser.displayName || 'Usuário',
-            cpf: '',
-            phone: '',
-            email: firebaseUser.email || '',
-            role: firebaseUser.email === 'guillehorta81@gmail.com' ? UserRole.ADMIN : UserRole.USER,
-            companies: [],
-            projects: [],
-            createdAt: Date.now()
-          };
-          await storageService.saveUser(user);
+          if (firebaseUser.email === 'guillehorta81@gmail.com') {
+            user = {
+              id: firebaseUser.uid,
+              name: firebaseUser.displayName || 'Administrador',
+              cpf: '000.000.000-00',
+              phone: '',
+              email: firebaseUser.email || '',
+              role: UserRole.ADMIN,
+              companies: [],
+              projects: [],
+              createdAt: Date.now()
+            };
+            await storageService.saveUser(user);
+          } else {
+            console.warn(`Acesso negado para o e-mail: ${firebaseUser.email}. Usuário não cadastrado na coleção 'users'.`);
+            await signOut(auth);
+            setCurrentUser(null);
+            storageService.setCurrentUser(null);
+            setView('login');
+            setFeedback({ type: 'error', msg: "Acesso negado. Seu usuário não está cadastrado no sistema." });
+            return;
+          }
         }
+
         setCurrentUser(user);
         storageService.setCurrentUser(user);
         if (view === 'login' || view === 'register') setView('dashboard');
@@ -196,6 +216,7 @@ const App: React.FC = () => {
     const unsubContractM = storageService.subscribeContractMeasurements(setContractMeasurements);
     const unsubExecutions = storageService.subscribeExecutions(setServiceExecutions);
     const unsubLogs = storageService.subscribeLogs(setLogs);
+    const unsubSecullum = secullumService.subscribeSecullumEmployees(setSecullumEmployees);
 
     // Only Admin and Gestor can see the user list
     let unsubUsers = () => {};
@@ -216,6 +237,7 @@ const App: React.FC = () => {
       unsubContractM();
       unsubExecutions();
       unsubLogs();
+      unsubSecullum();
       unsubUsers();
     };
   }, [currentUser]);
@@ -255,6 +277,151 @@ const App: React.FC = () => {
     }
   };
 
+  const handleForgotPassword = async () => {
+    if (!loginEmail) {
+      setFeedback({ type: 'error', msg: "Por favor, preencha o campo de e-mail acima para obter a redefinição de sua senha." });
+      return;
+    }
+    try {
+      setIsProcessing(true);
+      await sendPasswordResetEmail(auth, loginEmail.trim());
+      setFeedback({ type: 'success', msg: `E-mail de redefinição enviado para ${loginEmail}! Siga as instruções para configurar sua senha.` });
+    } catch (error: any) {
+      console.error("Error sending password reset email:", error);
+      let errMsg = "Erro ao enviar e-mail de redefinição de senha.";
+      if (error.code === 'auth/user-not-found') {
+        errMsg = "Nenhum usuário correspondente encontrado com este e-mail.";
+      } else if (error.code === 'auth/invalid-email') {
+        errMsg = "Formato de e-mail inválido.";
+      }
+      setFeedback({ type: 'error', msg: errMsg });
+    } finally {
+      setIsProcessing(false);
+      clearFeedback();
+    }
+  };
+
+  const handleCheckDiagnosticUser = async () => {
+    if (!diagnosticEmail) {
+      setFeedback({ type: 'error', msg: "Preencha o e-mail para diagnosticar." });
+      return;
+    }
+    setIsCheckingDiagnostic(true);
+    try {
+      const res = await axios.get(`/api/auth/check-user?email=${encodeURIComponent(diagnosticEmail.trim())}`);
+      setDiagnosticResult(res.data);
+      if (res.data.exists) {
+        setFeedback({ type: 'success', msg: "E-mail encontrado no Firebase Auth! Veja os detalhes abaixo." });
+      } else {
+        setFeedback({ type: 'success', msg: "Nenhum usuário correspondente encontrado no Firebase Auth. E-mail livre!" });
+      }
+    } catch (checkErr: any) {
+      console.error("Error diagnosing user email:", checkErr);
+      const data = checkErr.response?.data;
+      
+      // Look for any hint of Identity Toolkit being disabled in standard or raw error details
+      const rawText = [
+        data ? JSON.stringify(data) : '',
+        checkErr.message || '',
+        String(checkErr)
+      ].join(' ').toLowerCase();
+
+      const isIdentityToolkitDisabled = 
+        data?.code === 'IDENTITY_TOOLKIT_DISABLED' ||
+        rawText.includes('identitytoolkit') ||
+        rawText.includes('identity toolkit') ||
+        rawText.includes('service_disabled') ||
+        rawText.includes('service-disabled') ||
+        rawText.includes('permission_denied') ||
+        rawText.includes('permission-denied') ||
+        rawText.includes('accessnotconfigured') ||
+        rawText.includes('googleapis.com/overview?project=');
+
+      if (isIdentityToolkitDisabled) {
+        let projectId = '171527547079';
+        const projectMatch = rawText.match(/project[\s=]+([a-zA-Z0-9-_]+)/) || rawText.match(/projects\/([a-zA-Z0-9-_]+)/);
+        if (projectMatch && projectMatch[1]) {
+          projectId = projectMatch[1];
+        }
+        
+        setDiagnosticResult({
+          isApiDisabled: true,
+          link: `https://console.developers.google.com/apis/api/identitytoolkit.googleapis.com/overview?project=${projectId}`,
+          message: data?.message || "A API de Autenticação Avançada do Firebase (Identity Toolkit) não está ativa no seu projeto do Google Cloud. Ela é necessária para buscar ou remover e-mails pela API de administração."
+        });
+        setFeedback({ type: 'error', msg: "A API do Google Cloud necessária está desativada no seu projeto. Siga as instruções abaixo." });
+      } else {
+        const errDetail = data?.message || data?.details || checkErr.message;
+        setFeedback({ type: 'error', msg: `Erro ao consultar API de diagnóstico: ${errDetail}` });
+      }
+    } finally {
+      setIsCheckingDiagnostic(false);
+      clearFeedback();
+    }
+  };
+
+  const handlePurgeDiagnosticUser = async () => {
+    if (!diagnosticEmail) {
+      setFeedback({ type: 'error', msg: "Preencha o e-mail para liberação forçada." });
+      return;
+    }
+    setConfirmModal({
+      isOpen: true,
+      title: 'Liberar E-mail da Autenticação',
+      message: `Tem certeza que deseja forçar a remoção do e-mail ${diagnosticEmail} da Autenticação do Firebase? Esta ação liberará completamente o e-mail para novo cadastro.`,
+      onConfirm: async () => {
+        setIsPurgingDiagnostic(true);
+        setConfirmModal(prev => ({ ...prev, isOpen: false }));
+        try {
+          await axios.post('/api/auth/delete-user', { email: diagnosticEmail.trim() });
+          setDiagnosticResult({ exists: false });
+          setFeedback({ type: 'success', msg: "Sucesso! O e-mail foi liberado com êxito da Autenticação do Firebase." });
+        } catch (purgeErr: any) {
+          console.error("Error purging user email:", purgeErr);
+          const data = purgeErr.response?.data;
+          
+          const rawText = [
+            data ? JSON.stringify(data) : '',
+            purgeErr.message || '',
+            String(purgeErr)
+          ].join(' ').toLowerCase();
+
+          const isIdentityToolkitDisabled = 
+            data?.code === 'IDENTITY_TOOLKIT_DISABLED' ||
+            rawText.includes('identitytoolkit') ||
+            rawText.includes('identity toolkit') ||
+            rawText.includes('service_disabled') ||
+            rawText.includes('service-disabled') ||
+            rawText.includes('permission_denied') ||
+            rawText.includes('permission-denied') ||
+            rawText.includes('accessnotconfigured') ||
+            rawText.includes('googleapis.com/overview?project=');
+
+          if (isIdentityToolkitDisabled) {
+            let projectId = '171527547079';
+            const projectMatch = rawText.match(/project[\s=]+([a-zA-Z0-9-_]+)/) || rawText.match(/projects\/([a-zA-Z0-9-_]+)/);
+            if (projectMatch && projectMatch[1]) {
+              projectId = projectMatch[1];
+            }
+
+            setDiagnosticResult({
+              isApiDisabled: true,
+              link: `https://console.developers.google.com/apis/api/identitytoolkit.googleapis.com/overview?project=${projectId}`,
+              message: data?.message || "A API de Autenticação Avançada do Firebase (Identity Toolkit) não está ativa no seu projeto do Google Cloud."
+            });
+            setFeedback({ type: 'error', msg: "A API necessária do Google Cloud está desativada no seu projeto. Siga as instruções abaixo." });
+          } else {
+            const errDetail = data?.message || data?.details || purgeErr.message;
+            setFeedback({ type: 'error', msg: `Falha na exclusão forçada: ${errDetail}` });
+          }
+        } finally {
+          setIsPurgingDiagnostic(false);
+          clearFeedback();
+        }
+      }
+    });
+  };
+
   const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!loginEmail || !loginPassword) {
@@ -272,7 +439,7 @@ const App: React.FC = () => {
       console.error("Erro no login:", error);
       let msg = "Erro ao realizar login.";
       if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential' || error.code === 'auth/invalid-login-credentials') {
-        msg = "E-mail ou senha incorretos.";
+        msg = "E-mail ou senha incorretos. Se você originalmente criou sua conta com o botão do Google, clique no botão 'Esqueceu sua senha?' acima para definir uma senha padrão de acesso por e-mail e senha.";
       } else if (error.code === 'auth/invalid-email') {
         msg = "E-mail inválido.";
       } else if (error.code === 'auth/operation-not-allowed') {
@@ -616,15 +783,79 @@ const App: React.FC = () => {
             : initializeApp(firebaseConfig, 'Secondary');
           const secondaryAuth = getAuth(secondaryApp);
           
-          const userCredential = await createUserWithEmailAndPassword(secondaryAuth, newUserEmail, newUserPassword);
+          let userCredential;
+          try {
+            userCredential = await createUserWithEmailAndPassword(secondaryAuth, newUserEmail.trim(), newUserPassword);
+          } catch (authError: any) {
+            if (authError.code === 'auth/email-already-in-use') {
+              const cleanedEmail = newUserEmail.toLowerCase().trim();
+              // Check if user actually exists in the Firestore database
+              const existingLocalUser = await storageService.getUserByEmail(cleanedEmail);
+              if (!existingLocalUser) {
+                // Dangling/deleted user! We can purge them from Firebase Auth and retry!
+                console.log(`Dangling user detected for ${cleanedEmail}. Attempting to purge from Firebase Auth and retry...`);
+                try {
+                  await axios.post('/api/auth/delete-user', { email: cleanedEmail });
+                  // Retry creation
+                  userCredential = await createUserWithEmailAndPassword(secondaryAuth, cleanedEmail, newUserPassword);
+                } catch (retryError: any) {
+                  console.error("Erro no retry após purgar conta:", retryError);
+                  const data = retryError.response?.data;
+                  
+                  const rawText = [
+                    data ? JSON.stringify(data) : '',
+                    retryError.message || '',
+                    String(retryError),
+                    retryError.response?.status === 403 ? 'identitytoolkit disabled 403' : ''
+                  ].join(' ').toLowerCase();
+
+                  const isIdentityToolkitDisabled = 
+                    data?.code === 'IDENTITY_TOOLKIT_DISABLED' ||
+                    retryError.response?.status === 403 ||
+                    rawText.includes('identitytoolkit') ||
+                    rawText.includes('identity toolkit') ||
+                    rawText.includes('service_disabled') ||
+                    rawText.includes('service-disabled') ||
+                    rawText.includes('permission_denied') ||
+                    rawText.includes('permission-denied') ||
+                    rawText.includes('accessnotconfigured') ||
+                    rawText.includes('googleapis.com/overview?project=');
+
+                  if (isIdentityToolkitDisabled) {
+                    let projectId = '171527547079';
+                    const projectMatch = rawText.match(/project[\s=]+([a-zA-Z0-9-_]+)/) || rawText.match(/projects\/([a-zA-Z0-9-_]+)/);
+                    if (projectMatch && projectMatch[1]) {
+                      projectId = projectMatch[1];
+                    }
+                    const link = `https://console.developers.google.com/apis/api/identitytoolkit.googleapis.com/overview?project=${projectId}`;
+                    throw new Error(`Este e-mail (${cleanedEmail}) já possui uma conta órfã no Firebase Auth. Não conseguimos liberá-lo automaticamente porque a API de Autenticação Avançada (Identity Toolkit API) está desativada no seu console Google Cloud. Para resolver isso, você pode: (1) Ativar a API clicando no link: ${link} ou (2) Entrar diretamente no seu painel do Firebase Console -> Authentication -> Users, buscar por "${cleanedEmail}" e excluí-lo manualmente de lá.`);
+                  }
+                  
+                  throw new Error(`Este e-mail está travado em uma conta órfã do Firebase Auth. Uma tentativa automática de liberação falhou: ${data?.message || retryError.message}. Por favor, utilize a "Ferramenta de Diagnóstico" abaixo para investigar.`);
+                }
+              } else {
+                throw authError;
+              }
+            } else {
+              throw authError;
+            }
+          }
           createdUid = userCredential.user.uid;
           await signOut(secondaryAuth); // Sign out from secondary app to cleanup
         } catch (authError: any) {
           console.error("Erro ao criar conta de autenticação:", authError);
-          let msg = "Erro ao criar conta de autenticação.";
-          if (authError.code === 'auth/email-already-in-use') msg = "Este e-mail já está em uso.";
-          else if (authError.code === 'auth/weak-password') msg = "A senha é muito fraca.";
-          else if (authError.code === 'auth/operation-not-allowed') msg = "O login por e-mail/senha não está ativado no Firebase Console.";
+          let msg = authError.message || "Erro ao criar conta de autenticação.";
+          if (authError.code === 'auth/email-already-in-use') {
+            msg = "Este e-mail já está em uso.";
+          } else if (authError.code === 'auth/weak-password') {
+            msg = "A senha é muito fraca (mínimo de 6 caracteres).";
+          } else if (authError.code === 'auth/invalid-email') {
+            msg = "Este formato de e-mail é inválido.";
+          } else if (authError.code === 'auth/operation-not-allowed') {
+            msg = "O login por e-mail/senha não está ativado no Firebase Console.";
+          } else if (authError.code) {
+            msg = `Erro na autenticação: ${authError.message} (${authError.code})`;
+          }
           
           setFeedback({ type: 'error', msg });
           setIsProcessing(false);
@@ -753,7 +984,16 @@ const App: React.FC = () => {
               </div>
             </div>
             <div className="space-y-1">
-              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Senha</label>
+              <div className="flex justify-between items-center px-1">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Senha</label>
+                <button 
+                  type="button" 
+                  onClick={handleForgotPassword} 
+                  className="text-[10px] text-indigo-400 hover:text-indigo-300 font-bold transition hover:underline"
+                >
+                  Esqueceu sua senha?
+                </button>
+              </div>
               <div className="relative">
                 <i className="fas fa-lock absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
                 <input 
@@ -1850,6 +2090,11 @@ const App: React.FC = () => {
                                           message: `Tem certeza que deseja excluir o usuário ${u.name}? Esta ação não pode ser desfeita.`,
                                           onConfirm: async () => {
                                             await storageService.deleteUser(u.id);
+                                            try {
+                                              await axios.post('/api/auth/delete-user', { uid: u.id, email: u.email });
+                                            } catch (authDelErr) {
+                                              console.warn("Could not delete from Firebase Auth, might not exist or lacks admin permission:", authDelErr);
+                                            }
                                             setFeedback({ type: 'success', msg: "Usuário excluído com sucesso!" });
                                             clearFeedback();
                                             setConfirmModal(prev => ({ ...prev, isOpen: false }));
@@ -1882,11 +2127,115 @@ const App: React.FC = () => {
                       </table>
                     </div>
                   </div>
+
+                  {/* Lock Diagnostic Panel for Admin */}
+                  <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+                    <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
+                      <div className="w-10 h-10 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600">
+                        <i className="fas fa-microscope text-lg"></i>
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-slate-800">Diagnóstico e Liberação de E-mails Órfãos</h4>
+                        <p className="text-xs text-slate-500">
+                          Se um e-mail foi excluído mas ainda acusa "já está em uso" na criação de novo usuário, utilize esta ferramenta para consultá-lo e removê-lo de forma forçada da Autenticação do Firebase.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <div className="flex-1">
+                        <input 
+                          type="email" 
+                          placeholder="Digite o e-mail para diagnosticar (ex: guille@hmtower.com.br)" 
+                          value={diagnosticEmail}
+                          onChange={(e) => setDiagnosticEmail(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-medium text-slate-800"
+                        />
+                      </div>
+                      <div className="flex gap-2">
+                        <button 
+                          onClick={handleCheckDiagnosticUser}
+                          disabled={isCheckingDiagnostic}
+                          className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-705 rounded-xl font-bold text-sm transition flex items-center gap-2 cursor-pointer"
+                        >
+                          {isCheckingDiagnostic ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-search"></i>}
+                          Verificar Status
+                        </button>
+                        <button 
+                          onClick={handlePurgeDiagnosticUser}
+                          disabled={isPurgingDiagnostic}
+                          className="px-4 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-xl font-bold text-sm transition flex items-center gap-2 border border-rose-100 cursor-pointer"
+                        >
+                          {isPurgingDiagnostic ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-trash-alt"></i>}
+                          Liberar E-mail Forçado
+                        </button>
+                      </div>
+                    </div>
+
+                    {diagnosticResult && (
+                      <div className={`p-4 rounded-xl border text-sm space-y-2 ${
+                        diagnosticResult.isApiDisabled 
+                          ? 'bg-rose-50 border-rose-200 text-rose-950 font-medium' 
+                          : diagnosticResult.exists 
+                            ? 'bg-amber-50/50 border-amber-200 text-amber-900' 
+                            : 'bg-emerald-50/50 border-emerald-200 text-emerald-950'
+                      }`}>
+                        {diagnosticResult.isApiDisabled ? (
+                          <div className="space-y-3">
+                            <div className="font-bold flex items-center gap-2 text-rose-800">
+                              <i className="fas fa-exclamation-triangle text-rose-500"></i>
+                              API Identity Toolkit Desativada no Console do Google Cloud!
+                            </div>
+                            <p className="text-xs text-rose-700 leading-relaxed">
+                              O Firebase Admin necessita que a Advanced Authentication API (também conhecida como <strong>Identity Toolkit API</strong>) esteja habilitada no painel de APIs de seu projeto Google Cloud para conseguir gerenciar e forçar a liberação de e-mails órfãos.
+                            </p>
+                            <div className="pt-1">
+                              <a 
+                                href={diagnosticResult.link} 
+                                target="_blank" 
+                                rel="noreferrer" 
+                                className="inline-flex items-center gap-2 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs px-4 py-2 rounded-lg transition shadow-sm cursor-pointer"
+                              >
+                                <i className="fas fa-external-link-alt"></i>
+                                Ativar Identity Toolkit API no Google Cloud
+                              </a>
+                            </div>
+                            <p className="text-[10px] text-slate-500 font-mono italic">
+                              Depois de reativar a API através do botão acima, aguarde de 1 a 2 minutos para que o Google propague e tente novamente!
+                            </p>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="font-bold flex items-center gap-2">
+                              <i className={diagnosticResult.exists ? "fas fa-exclamation-triangle text-amber-500" : "fas fa-check-circle text-emerald-500"}></i>
+                              {diagnosticResult.exists ? 'O e-mail está ATIVO na autenticação do Firebase!' : 'O e-mail está COMPLETAMENTE LIBERADO.'}
+                            </div>
+                            {diagnosticResult.exists && (
+                              <div className="text-xs space-y-1 font-medium text-slate-600">
+                                <div>• <strong>UID no Firebase Auth:</strong> <span className="font-mono bg-white px-1.5 py-0.5 rounded border border-slate-200">{diagnosticResult.uid}</span></div>
+                                <div>• <strong>Provedor Principal:</strong> {diagnosticResult.providerId === 'google.com' ? 'Acesso via Google Auth (Conta Google)' : 'Acesso via E-mail e Senha'}</div>
+                                <div>• <strong>Cadastrado na tabela local do banco ("users")?</strong> {
+                                  users.some(u => u.email.toLowerCase() === (diagnosticResult.email || diagnosticEmail).trim().toLowerCase()) 
+                                    ? <span className="text-emerald-600 font-bold">Sim (Acesso normal)</span> 
+                                    : <span className="text-rose-600 font-bold">Não (Esta conta está órfã / travada! Precisa de exclusão forçada!)</span>
+                                }</div>
+                              </div>
+                            )}
+                            {!diagnosticResult.exists && (
+                              <div className="text-xs text-slate-500">
+                                Este e-mail está totalmente limpo na base do Firebase e pode receber um novo usuário sem qualquer aviso de conflito.
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <div className="max-w-2xl mx-auto">
-                  <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-xl overflow-hidden relative">
-                    <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-indigo-500 to-indigo-300"></div>
+                  <div className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-xl relative overflow-visible">
+                    <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-indigo-500 to-indigo-300 rounded-t-[2rem]"></div>
                     
                     <div className="flex justify-between items-center mb-10">
                       <div>
@@ -1999,7 +2348,7 @@ const App: React.FC = () => {
                                   <span>Controle de Acesso por Empresa</span>
                                 </label>
                                 {companies.map(c => (
-                                  <label key={c.id} className="flex items-center gap-3 p-2 hover:bg-indigo-50 rounded-xl cursor-pointer text-xs text-slate-700 transition">
+                                  <label key={c.id} className="flex items-start gap-3 p-2 hover:bg-indigo-50 rounded-xl cursor-pointer text-xs text-slate-700 transition leading-tight whitespace-normal break-words">
                                     <input 
                                       type="checkbox" 
                                       checked={newUserCompanies.includes(c.name)}
@@ -2007,9 +2356,9 @@ const App: React.FC = () => {
                                         if (e.target.checked) setNewUserCompanies([...newUserCompanies, c.name]);
                                         else setNewUserCompanies(newUserCompanies.filter(n => n !== c.name));
                                       }}
-                                      className="accent-indigo-600 w-4 h-4"
+                                      className="accent-indigo-600 w-4 h-4 mt-0.5 flex-shrink-0"
                                     />
-                                    {c.name}
+                                    <span>{c.name}</span>
                                   </label>
                                 ))}
                               </div>
@@ -2034,7 +2383,7 @@ const App: React.FC = () => {
                                   <span>Controle de Acesso por Obra</span>
                                 </label>
                                 {userProjects.map(p => (
-                                  <label key={p.id} className="flex items-center gap-3 p-2 hover:bg-indigo-50 rounded-xl cursor-pointer text-xs text-slate-700 transition">
+                                  <label key={p.id} className="flex items-start gap-3 p-2 hover:bg-indigo-50 rounded-xl cursor-pointer text-xs text-slate-700 transition leading-tight whitespace-normal break-words">
                                     <input 
                                       type="checkbox" 
                                       checked={newUserProjects.includes(p.name)}
@@ -2042,9 +2391,9 @@ const App: React.FC = () => {
                                         if (e.target.checked) setNewUserProjects([...newUserProjects, p.name]);
                                         else setNewUserProjects(newUserProjects.filter(n => n !== p.name));
                                       }}
-                                      className="accent-indigo-600 w-4 h-4"
+                                      className="accent-indigo-600 w-4 h-4 mt-0.5 flex-shrink-0"
                                     />
-                                    {p.name}
+                                    <span>{p.name}</span>
                                   </label>
                                 ))}
                               </div>
@@ -2582,7 +2931,8 @@ const App: React.FC = () => {
               
               <EmployeeAdminView 
                 employees={employees}
-                companies={userCompanies}
+                secullumEmployees={secullumEmployees}
+                companies={companies}
                 projects={userProjects}
                 jobFunctions={jobFunctions}
                 onSaveEmployee={handleSaveEmployee}

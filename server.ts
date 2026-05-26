@@ -5,11 +5,90 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import admin from 'firebase-admin';
+import fs from 'fs';
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Initialize Firebase Admin SDK
+try {
+  const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
+  if (fs.existsSync(configPath)) {
+    const firebaseConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    admin.initializeApp({
+      projectId: firebaseConfig.projectId
+    });
+    console.log('Firebase Admin initialized successfully with Project ID:', firebaseConfig.projectId);
+  } else {
+    admin.initializeApp();
+    console.log('Firebase Admin initialized successfully (default).');
+  }
+} catch (adminError) {
+  console.error('Firebase Admin initialization failed:', adminError);
+}
+
+function formatFirebaseError(error: any) {
+  const errMsg = String(error.message || '');
+  const errCode = String(error.code || '');
+  const errStack = String(error.stack || '');
+  const errInfo = error.errorInfo ? JSON.stringify(error.errorInfo) : '';
+  const errDetails = error.response?.data ? JSON.stringify(error.response.data) : String(error.details || '');
+  const rawResponse = error.rawResponse ? String(error.rawResponse) : '';
+  
+  const combined = [errMsg, errCode, errStack, errInfo, errDetails, rawResponse].join(' ').toLowerCase();
+
+  const looksLikeIdentityToolkitDisabled = 
+    combined.includes('identitytoolkit') || 
+    combined.includes('identity toolkit') || 
+    combined.includes('service_disabled') || 
+    combined.includes('service-disabled') ||
+    combined.includes('permission_denied') ||
+    combined.includes('permission-denied') ||
+    combined.includes('accessnotconfigured') ||
+    combined.includes('googleapis.com/overview?project=');
+
+  if (looksLikeIdentityToolkitDisabled) {
+    let projectId = '171527547079'; // Try current container project default
+    const projectIdMatch = combined.match(/projects\/([a-zA-Z0-9-_]+)/) || combined.match(/project[\s=]+([a-zA-Z0-9-_]+)/);
+    if (projectIdMatch && projectIdMatch[1]) {
+      projectId = projectIdMatch[1];
+    } else {
+      try {
+        const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
+        if (fs.existsSync(configPath)) {
+          const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+          if (config.projectId) projectId = config.projectId;
+        }
+      } catch (e) {}
+    }
+
+    const activationUrl = `https://console.developers.google.com/apis/api/identitytoolkit.googleapis.com/overview?project=${projectId}`;
+
+    return {
+      status: 403,
+      body: {
+        error: 'A API Identity Toolkit está desativada no seu Google Cloud.',
+        code: 'IDENTITY_TOOLKIT_DISABLED',
+        message: 'A API de Autenticação Avançada do Firebase (Identity Toolkit) não está ativa no seu projeto do Google Cloud. Ela é estritamente necessária para que o servidor possa verificar, listar ou remover contas de e-mail do Firebase Auth.',
+        link: activationUrl,
+        details: error.message || 'Identity Toolkit API is disabled.'
+      }
+    };
+  }
+
+  return {
+    status: 500,
+    body: {
+      error: 'Erro no Firebase Auth',
+      code: error.code || 'UNKNOWN_ERROR',
+      message: error.message || 'Ocorreu um erro ao processar a requisição no Firebase.',
+      details: error.message || null
+    }
+  };
+}
 
 async function startServer() {
   const app = express();
@@ -21,6 +100,70 @@ async function startServer() {
   // API Routes
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok' });
+  });
+
+  // Firebase Auth check user endpoint for diagnostics
+  app.get('/api/auth/check-user', async (req, res) => {
+    const { email } = req.query;
+    if (!email) {
+      return res.status(400).json({ error: 'E-mail é obrigatório para verificação.' });
+    }
+    try {
+      try {
+        const user = await admin.auth().getUserByEmail(email as string);
+        return res.json({
+          exists: true,
+          uid: user.uid,
+          email: user.email,
+          displayName: user.displayName || null,
+          providerId: user.providerData?.[0]?.providerId || 'password',
+          disabled: user.disabled
+        });
+      } catch (authError: any) {
+        if (authError.code === 'auth/user-not-found') {
+          return res.json({ exists: false, message: 'Não encontrado no Firebase Auth.' });
+        }
+        throw authError;
+      }
+    } catch (error: any) {
+      console.error('Erro ao verificar usuário no Auth:', error);
+      const formatted = formatFirebaseError(error);
+      res.status(formatted.status).json(formatted.body);
+    }
+  });
+
+  // Firebase Auth purge user endpoint
+  app.post('/api/auth/delete-user', async (req, res) => {
+    const { uid, email } = req.body;
+    console.log(`Backend delete-user request received. UID: ${uid || 'N/A'}, Email: ${email || 'N/A'}`);
+    try {
+      if (!uid && !email) {
+        return res.status(400).json({ error: 'É necessário informar o UID ou e-mail.' });
+      }
+
+      if (uid) {
+        await admin.auth().deleteUser(uid);
+        console.log(`User with UID ${uid} successfully deleted from Firebase Auth.`);
+      } else if (email) {
+        try {
+          const user = await admin.auth().getUserByEmail(email);
+          await admin.auth().deleteUser(user.uid);
+          console.log(`User with email ${email} successfully deleted from Firebase Auth (UID ${user.uid}).`);
+        } catch (emailError: any) {
+          if (emailError.code === 'auth/user-not-found') {
+            console.log(`User with email ${email} not found in Firebase Auth, skipping delete.`);
+            return res.json({ success: true, message: 'Usuário não existia na autenticação.' });
+          }
+          throw emailError;
+        }
+      }
+
+      res.json({ success: true, message: 'Usuário removido da autenticação com sucesso.' });
+    } catch (error: any) {
+      console.error('Erro ao deletar usuário da autenticação:', error);
+      const formatted = formatFirebaseError(error);
+      res.status(formatted.status).json(formatted.body);
+    }
   });
 
   // Secullum API - Test Authentication and Claims

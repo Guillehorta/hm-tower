@@ -120,6 +120,18 @@
         "createdAt": { "type": "number" }
       },
       "required": ["id", "projectId", "date"]
+    },
+    "SecullumEmployee": {
+      "title": "Funcionário Secullum",
+      "description": "Dados brutos importados da API Secullum.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "data": { "type": "object" },
+        "lastImportedAt": { "type": "number" },
+        "linkedEmployeeId": { "type": "string" }
+      },
+      "required": ["id", "data", "lastImportedAt"]
     }
   },
   "firestore": {
@@ -154,6 +166,10 @@
     "/weatherlogs/{logId}": {
       "schema": "WeatherLog",
       "description": "Histórico climático por obra."
+    },
+    "/secullum_employees/{id}": {
+      "schema": "SecullumEmployee",
+      "description": "Dados de funcionários importados do Secullum."
     }
   }
 }

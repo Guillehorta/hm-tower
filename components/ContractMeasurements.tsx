@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef } from 'react';
-import { Contract, ContractMeasurement, Company, Project, ContractItem, MeasurementItem, Supplier, Employee, LaborTracking } from '../types';
+import { Contract, ContractMeasurement, Company, Project, ContractItem, MeasurementItem, Supplier, Employee, LaborTracking, ExtraMeasurementItem } from '../types';
 import { generateId } from '../src/lib/utils';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
@@ -23,6 +23,18 @@ interface ContractMeasurementsProps {
 }
 
 type ViewState = 'contracts' | 'contract-details' | 'new-contract' | 'new-measurement' | 'measurement-summary';
+
+const EXTRA_CATEGORIES = [
+  'Ajuda de custo',
+  'Ajuda de transporte',
+  'Aluguel',
+  'Alimentação',
+  'Salário',
+  'VA',
+  'VT',
+  'Desconto',
+  'Reembolso'
+] as const;
 
 export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
   contracts,
@@ -56,11 +68,30 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
 
   // New Measurement State
   const [newMeasurementItems, setNewMeasurementItems] = useState<MeasurementItem[]>([]);
+  const [newExtraContractItems, setNewExtraContractItems] = useState<ExtraMeasurementItem[]>([]);
   const [measurementDate, setMeasurementDate] = useState(new Date().toISOString().split('T')[0]);
   const [dueDate, setDueDate] = useState('');
   const [searchStartDate, setSearchStartDate] = useState(new Date(new Date().setDate(new Date().getDate() - 30)).toISOString().split('T')[0]);
   const [searchEndDate, setSearchEndDate] = useState(new Date().toISOString().split('T')[0]);
   const [measurementObs, setMeasurementObs] = useState('');
+  const [hoveredServiceIdx, setHoveredServiceIdx] = useState<number | null>(null);
+  const hoverTimeoutRef = useRef<any>(null);
+
+  const handleMouseEnterTooltip = (idx: number) => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+    }
+    setHoveredServiceIdx(idx);
+  };
+
+  const handleMouseLeaveTooltip = () => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current);
+    }
+    hoverTimeoutRef.current = setTimeout(() => {
+      setHoveredServiceIdx(null);
+    }, 250);
+  };
 
   const printRef = useRef<HTMLDivElement>(null);
 
@@ -93,6 +124,29 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
     [measurements, selectedMeasurementId]
   );
 
+  const currentMeasurementNumber = useMemo(() => {
+    if (selectedMeasurementId && view === 'new-measurement') {
+      return selectedMeasurement?.measurementNumber || 1;
+    }
+    return (contractMeasurements.length > 0 ? Math.max(...contractMeasurements.map(m => m.measurementNumber)) : 0) + 1;
+  }, [selectedMeasurementId, view, selectedMeasurement, contractMeasurements]);
+
+  const getExtraItemAccumulatedValue = (description: string, type: 'acréscimo' | 'desconto', category: string, upToMeasurementNumber: number) => {
+    const prevMeasurements = measurements.filter(m => 
+      m.contractId === selectedContractId && m.measurementNumber < upToMeasurementNumber
+    );
+    
+    return prevMeasurements.reduce((acc, m) => {
+      const extraItems = m.extraItems || [];
+      const matching = extraItems.filter(e => 
+        e.description.trim().toLowerCase() === description.trim().toLowerCase() &&
+        e.type === type &&
+        e.category === category
+      );
+      return acc + matching.reduce((sum, e) => sum + (e.measuredValue || 0), 0);
+    }, 0);
+  };
+
   const getAccumulatedQuantity = (contractItemId: string, upToMeasurementNumber: number, servicePath?: string) => {
     const prevMeasurements = measurements.filter(m => 
       m.contractId === selectedContractId && m.measurementNumber < upToMeasurementNumber
@@ -106,12 +160,75 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
     }, 0);
   };
 
+  const resolvePhysicalPathName = (path: string, project: Project | undefined) => {
+    if (!project) return path;
+    const parts = path.split('|');
+    if (parts.length === 0) return path;
+
+    const [cuId, bId, fId, uId] = parts;
+    const cu = project.constructionUnits.find(c => c.id === cuId);
+    if (!cu) return path;
+
+    let fullName = cu.name;
+    if (bId) {
+      const b = cu.blocks.find(x => x.id === bId);
+      if (b) {
+        fullName += ` > ${b.name}`;
+        if (fId) {
+          const f = b.floors.find(x => x.id === fId);
+          if (f) {
+            fullName += ` > ${f.name}`;
+            if (uId) {
+              const u = f.units.find(x => x.id === uId);
+              if (u) {
+                fullName += ` > ${u.name}`;
+              }
+            }
+          }
+        }
+      }
+    }
+    return fullName;
+  };
+
+  const concludedItemsByService = useMemo(() => {
+    if (!selectedContract) return {};
+    
+    const mapping: { [servicePath: string]: string[] } = {};
+    
+    const start = new Date(searchStartDate).getTime();
+    const end = new Date(searchEndDate).getTime();
+    const filtered = laborTracking.filter(t => {
+      const tDate = new Date(t.date).getTime();
+      return t.projectId === selectedContract.projectId && tDate >= start && tDate <= end;
+    });
+
+    const project = projects.find(p => p.id === selectedContract.projectId);
+
+    filtered.forEach(t => {
+      t.costStructureSelections?.forEach(svcPath => {
+        if (!mapping[svcPath]) {
+          mapping[svcPath] = [];
+        }
+        t.selections?.forEach(sel => {
+          const resolved = resolvePhysicalPathName(sel, project);
+          if (!mapping[svcPath].includes(resolved)) {
+            mapping[svcPath].push(resolved);
+          }
+        });
+      });
+    });
+
+    return mapping;
+  }, [laborTracking, selectedContract, searchStartDate, searchEndDate, projects]);
+
   const stageSummary = useMemo(() => {
     if (!selectedMeasurement || !selectedContract) return [];
     
     const summary: { [key: string]: { name: string, current: number, total: number } } = {};
     let totalCurrentValue = 0;
 
+    // 1. Core items
     selectedContract.items.forEach(item => {
       const mItem = selectedMeasurement.items.find(mi => mi.contractItemId === item.id);
       const measuredValue = (mItem?.measuredQuantity || 0) * item.unitValue;
@@ -136,9 +253,35 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
       summary[stageName].total += totalValue;
     });
 
+    // 2. Extra items
+    if (selectedMeasurement.extraItems) {
+      selectedMeasurement.extraItems.forEach(eItem => {
+        const signedValue = eItem.type === 'desconto' ? -eItem.measuredValue : eItem.measuredValue;
+        const prevAccum = eItem.prevAccumulated || 0;
+        const totalValue = prevAccum + signedValue;
+
+        totalCurrentValue += signedValue;
+
+        let stageName = 'Outros';
+        if (eItem.stagePath) {
+          const [ccId, stId] = eItem.stagePath.split('|');
+          const project = projects.find(p => p.id === selectedContract.projectId);
+          const cc = project?.costStructure?.find(c => c.id === ccId);
+          const st = cc?.stages.find(s => s.id === stId);
+          if (st) stageName = st.name;
+        }
+
+        if (!summary[stageName]) {
+          summary[stageName] = { name: stageName, current: 0, total: 0 };
+        }
+        summary[stageName].current += signedValue;
+        summary[stageName].total += totalValue;
+      });
+    }
+
     return Object.values(summary).map(s => ({
       ...s,
-      percentage: totalCurrentValue > 0 ? (s.current / totalCurrentValue) * 100 : 0
+      percentage: totalCurrentValue !== 0 ? (s.current / totalCurrentValue) * 100 : 0
     })).sort((a, b) => b.current - a.current);
   }, [selectedMeasurement, selectedContract, projects, measurements]);
 
@@ -223,6 +366,7 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
     }));
     
     setNewMeasurementItems(items);
+    setNewExtraContractItems([]);
     setMeasurementDate(new Date().toISOString().split('T')[0]);
     setDueDate('');
     setMeasurementObs('');
@@ -235,15 +379,27 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
     const isEditing = !!selectedMeasurementId && view === 'new-measurement';
     const nextNumber = (contractMeasurements.length > 0 ? Math.max(...contractMeasurements.map(m => m.measurementNumber)) : 0) + 1;
     
+    const mNum = isEditing ? selectedMeasurement?.measurementNumber || 1 : nextNumber;
+    
+    const extraItemsWithAccumulated = newExtraContractItems.map(item => {
+      const prevAccum = getExtraItemAccumulatedValue(item.description, item.type, item.category, mNum);
+      return {
+        ...item,
+        prevAccumulated: prevAccum,
+        currentAccumulated: prevAccum + (item.measuredValue || 0)
+      };
+    });
+
     const measurement: ContractMeasurement = {
       id: isEditing ? selectedMeasurementId! : generateId(),
       contractId: selectedContractId,
-      measurementNumber: isEditing ? selectedMeasurement?.measurementNumber || 1 : nextNumber,
+      measurementNumber: mNum,
       date: measurementDate,
       startDate: searchStartDate,
       endDate: searchEndDate,
       dueDate: dueDate,
       items: newMeasurementItems,
+      extraItems: extraItemsWithAccumulated,
       observations: measurementObs,
       status: 'completed',
       createdAt: isEditing ? selectedMeasurement?.createdAt || Date.now() : Date.now()
@@ -268,46 +424,119 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
 
     const items: MeasurementItem[] = [];
 
-    selectedContract.items.forEach(contractItem => {
-      // In payroll mode, description is the employee name
-      const employee = employees.find(e => e.name === contractItem.description);
-      if (!employee) return;
+    // Calculate period days
+    const startD = new Date(searchStartDate);
+    const endD = new Date(searchEndDate);
+    const diffTime = Math.abs(endD.getTime() - startD.getTime());
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+    const periodDays = isNaN(diffDays) || diffDays <= 0 ? 1 : diffDays;
 
-      const employeeTrackings = filteredTrackings.filter(t => t.employeeId === employee.id);
-      
-      // Group by service
-      const serviceGroups: { [key: string]: { dates: Set<string>, components: Set<string> } } = {};
+    if (isPayrollMode) {
+      selectedContract.items.forEach(contractItem => {
+        // In payroll mode, description is the employee name
+        const employee = employees.find(e => e.name === contractItem.description);
+        if (!employee) return;
 
-      employeeTrackings.forEach(t => {
-        const services = t.costStructureSelections || [];
-        services.forEach(s => {
-          if (!serviceGroups[s]) {
-            serviceGroups[s] = { dates: new Set(), components: new Set() };
-          }
-          serviceGroups[s].dates.add(t.date);
-          t.selections.forEach(c => serviceGroups[s].components.add(c));
+        const employeeTrackings = filteredTrackings.filter(t => t.employeeId === employee.id);
+        
+        // Group by service
+        const serviceGroups: { [key: string]: { dates: Set<string>, components: Set<string> } } = {};
+
+        employeeTrackings.forEach(t => {
+          const services = t.costStructureSelections || [];
+          services.forEach(s => {
+            if (!serviceGroups[s]) {
+              serviceGroups[s] = { dates: new Set(), components: new Set() };
+            }
+            serviceGroups[s].dates.add(t.date);
+            t.selections.forEach(c => serviceGroups[s].components.add(c));
+          });
+        });
+
+        Object.entries(serviceGroups).forEach(([servicePath, data]) => {
+          const daysWorked = data.dates.size;
+          const productivity = daysWorked > 0 ? data.components.size / daysWorked : 0;
+
+          items.push({
+            contractItemId: contractItem.id,
+            measuredQuantity: daysWorked,
+            servicePath,
+            productivity
+          });
         });
       });
+    } else {
+      // Contract Mode only
+      selectedContract.items.forEach(contractItem => {
+        const itemServicePath = contractItem.servicePath || '';
+        // Look up already entered/existing value in newMeasurementItems
+        const existingItem = newMeasurementItems.find(mi => mi.contractItemId === contractItem.id);
+        const currentMeasuredQty = existingItem ? existingItem.measuredQuantity : 0;
 
-      Object.entries(serviceGroups).forEach(([servicePath, data]) => {
-        const daysWorked = data.dates.size;
-        const productivity = daysWorked > 0 ? data.components.size / daysWorked : 0;
+        if (!itemServicePath) {
+          items.push({
+            contractItemId: contractItem.id,
+            measuredQuantity: currentMeasuredQty,
+            productivity: 0,
+            totalServices: 0,
+            servicePath: ''
+          });
+          return;
+        }
+
+        // Find all trackings matching this contractItem's service path in the selection period
+        const matchingTrackings = filteredTrackings.filter(t => 
+          t.costStructureSelections?.includes(itemServicePath)
+        );
+
+        // Collect all unique physical unit selections (e.g. units/components in EAP)
+        const uniqueSelections = new Set<string>();
+        matchingTrackings.forEach(t => {
+          t.selections?.forEach(sel => {
+            uniqueSelections.add(sel);
+          });
+        });
+
+        const totalServices = uniqueSelections.size;
+        const productivity = totalServices / periodDays;
 
         items.push({
           contractItemId: contractItem.id,
-          measuredQuantity: daysWorked,
-          servicePath,
-          productivity
+          measuredQuantity: currentMeasuredQty, // Keep user's input, do not overwrite!
+          servicePath: itemServicePath,
+          productivity: productivity,
+          totalServices: totalServices // Store separately
         });
       });
-    });
+    }
 
     if (items.length === 0) {
-      if (onFeedback) onFeedback('error', "Nenhum registro de trabalho encontrado para os colaboradores deste contrato no período selecionado.");
+      if (onFeedback) onFeedback('error', "Nenhum registro de trabalho encontrado para este contrato no período selecionado.");
     } else {
       setNewMeasurementItems(items);
       if (onFeedback) onFeedback('success', `${items.length} linhas de medição geradas com base nos apontamentos.`);
     }
+  };
+
+  const handleAddExtraItem = () => {
+    const newItem: ExtraMeasurementItem = {
+      id: generateId(),
+      description: '',
+      type: 'acréscimo',
+      category: 'Ajuda de custo',
+      prevAccumulated: 0,
+      measuredValue: 0,
+      currentAccumulated: 0
+    };
+    setNewExtraContractItems(prev => [...prev, newItem]);
+  };
+
+  const handleUpdateExtraItem = (id: string, field: keyof ExtraMeasurementItem, value: any) => {
+    setNewExtraContractItems(prev => prev.map(item => item.id === id ? { ...item, [field]: value } : item));
+  };
+
+  const handleRemoveExtraItem = (id: string) => {
+    setNewExtraContractItems(prev => prev.filter(item => item.id !== id));
   };
   const handleEditMeasurement = (m: ContractMeasurement) => {
     const isLast = contractMeasurements.length > 0 && m.id === contractMeasurements[0].id;
@@ -316,6 +545,7 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
       return;
     }
     setNewMeasurementItems(m.items);
+    setNewExtraContractItems(m.extraItems || []);
     setMeasurementDate(m.date);
     setSearchStartDate(m.startDate || '');
     setSearchEndDate(m.endDate || '');
@@ -336,7 +566,7 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
     const pdfWidth = pdf.internal.pageSize.getWidth();
     const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
     pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-    pdf.save(`Medicao_${selectedContract?.number}_M${selectedMeasurement?.measurementNumber}.pdf`);
+    pdf.save(`Medicao_${selectedContract?.number}-${selectedMeasurement?.measurementNumber.toString().padStart(2, '0')}.pdf`);
   };
 
   const generateXLSX = () => {
@@ -393,7 +623,7 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
       ["CONTRATO:", selectedContract.number],
       ["FORNECEDOR:", selectedContract.supplierName],
       ["OBRA:", projects.find(p => p.id === selectedContract.projectId)?.name || ''],
-      ["MEDIÇÃO N°:", `${selectedContract.number} - ${selectedMeasurement.measurementNumber.toString().padStart(3, '0')}`],
+      ["MEDIÇÃO N°:", `${selectedContract.number}-${selectedMeasurement.measurementNumber.toString().padStart(2, '0')}`],
       ["DATA:", new Date(selectedMeasurement.date).toLocaleDateString('pt-BR')],
       [] // Empty row
     ];
@@ -405,7 +635,7 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
       ["CONTRATO:", selectedContract.number],
       ["FORNECEDOR:", selectedContract.supplierName],
       ["OBRA:", projects.find(p => p.id === selectedContract.projectId)?.name || ''],
-      ["MEDIÇÃO N°:", `${selectedContract.number} - ${selectedMeasurement.measurementNumber.toString().padStart(3, '0')}`],
+      ["MEDIÇÃO N°:", `${selectedContract.number}-${selectedMeasurement.measurementNumber.toString().padStart(2, '0')}`],
       ["DATA:", new Date(selectedMeasurement.date).toLocaleDateString('pt-BR')],
       ["PERÍODO:", selectedMeasurement.startDate && selectedMeasurement.endDate ? `${new Date(selectedMeasurement.startDate).toLocaleDateString('pt-BR')} - ${new Date(selectedMeasurement.endDate).toLocaleDateString('pt-BR')}` : 'N/A'],
       ["VENCIMENTO:", selectedMeasurement.dueDate ? new Date(selectedMeasurement.dueDate).toLocaleDateString('pt-BR') : 'N/A'],
@@ -431,11 +661,27 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
       ]);
     });
 
+    if (selectedMeasurement.extraItems && selectedMeasurement.extraItems.length > 0) {
+      finalData.push([]);
+      finalData.push(["ITENS EXTRA CONTRATO"]);
+      finalData.push(["DESCRIÇÃO", "TIPO", "CATEGORIA", "V. ACUM. ANT.", "V. MEDIDO", "V. ACUM. ATUAL"]);
+      selectedMeasurement.extraItems.forEach(item => {
+        finalData.push([
+          item.description,
+          item.type.toUpperCase(),
+          item.category,
+          item.prevAccumulated,
+          item.measuredValue,
+          item.currentAccumulated
+        ]);
+      });
+    }
+
     const ws = XLSX.utils.aoa_to_sheet(finalData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Medição");
     
-    XLSX.writeFile(wb, `Medicao_${selectedContract.number}_M${selectedMeasurement.measurementNumber}.xlsx`);
+    XLSX.writeFile(wb, `Medicao_${selectedContract.number}-${selectedMeasurement.measurementNumber.toString().padStart(2, '0')}.xlsx`);
   };
 
   return (
@@ -484,33 +730,36 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
           <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Empresa</label>
-              <input 
-                type="text" 
+              <select 
                 value={filterCompany}
                 onChange={(e) => setFilterCompany(e.target.value)}
-                placeholder="Filtrar por empresa..."
                 className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-              />
+              >
+                <option value="">Todas as empresas</option>
+                {companies.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+              </select>
             </div>
             <div>
               <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Obra</label>
-              <input 
-                type="text" 
+              <select 
                 value={filterProject}
                 onChange={(e) => setFilterProject(e.target.value)}
-                placeholder="Filtrar por obra..."
                 className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-              />
+              >
+                <option value="">Todas as obras</option>
+                {projects.map(p => <option key={p.id} value={p.name}>{p.name}</option>)}
+              </select>
             </div>
             <div>
               <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Fornecedor</label>
-              <input 
-                type="text" 
+              <select 
                 value={filterSupplier}
                 onChange={(e) => setFilterSupplier(e.target.value)}
-                placeholder="Filtrar por fornecedor..."
                 className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-              />
+              >
+                <option value="">Todos os fornecedores</option>
+                {suppliers.sort((a,b) => a.name.localeCompare(b.name)).map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
+              </select>
             </div>
           </div>
 
@@ -631,7 +880,32 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
               <label className="block text-sm font-bold text-slate-700 mb-2">Obra</label>
               <select 
                 value={newContract.projectId || ''}
-                onChange={(e) => setNewContract(prev => ({ ...prev, projectId: e.target.value }))}
+                onChange={(e) => {
+                  const projectId = e.target.value;
+                  setNewContract(prev => {
+                    const updated = { ...prev, projectId };
+                    // If we are creating a new contract (not editing an existing one)
+                    if (!prev.id) {
+                      const project = projects.find(p => p.id === projectId);
+                      const projectCode = project?.code || '00';
+                      const prefix = isPayrollMode ? `FP-${projectCode}` : `CT-${projectCode}`;
+                      
+                      const samePrefixContracts = contracts.filter(c => c.number.startsWith(prefix));
+                      let nextSeq = 1;
+                      if (samePrefixContracts.length > 0) {
+                        const suffixes = samePrefixContracts.map(c => {
+                          const suffixStr = c.number.substring(prefix.length);
+                          const val = parseInt(suffixStr, 10);
+                          return isNaN(val) ? 0 : val;
+                        });
+                        nextSeq = Math.max(...suffixes, 0) + 1;
+                      }
+                      
+                      updated.number = `${prefix}${nextSeq.toString().padStart(2, '0')}`;
+                    }
+                    return updated;
+                  });
+                }}
                 className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500"
               >
                 <option value="">Selecione</option>
@@ -833,7 +1107,7 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                   return (
                     <tr key={m.id} className="hover:bg-slate-50 transition-colors">
                       <td className="px-6 py-4 font-bold text-slate-700">
-                        {selectedContract.number} - {m.measurementNumber.toString().padStart(3, '0')}
+                        {selectedContract.number}-{m.measurementNumber.toString().padStart(2, '0')}
                       </td>
                       <td className="px-6 py-4 text-sm text-slate-600">{new Date(m.date).toLocaleDateString()}</td>
                       <td className="px-6 py-4">
@@ -916,7 +1190,7 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
       {view === 'new-measurement' && selectedContract && (
         <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-200 space-y-8 max-w-full mx-auto">
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
-            <h3 className="text-xl font-bold text-slate-800 italic">Nova Medição - {selectedContract.number}</h3>
+            <h3 className="text-xl font-bold text-slate-800 italic">Nova Medição - {selectedContract.number}-{currentMeasurementNumber.toString().padStart(2, '0')}</h3>
             
             <div className="flex flex-wrap items-end gap-4 bg-slate-50 p-4 rounded-2xl border border-slate-200">
               <div>
@@ -1014,15 +1288,58 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                     return sv?.name || '-';
                   })();
 
+                  const startD = new Date(searchStartDate);
+                  const endD = new Date(searchEndDate);
+                  const diffTime = Math.abs(endD.getTime() - startD.getTime());
+                  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+                  const currentPeriodDays = isNaN(diffDays) || diffDays <= 0 ? 1 : diffDays;
+                  
+                  const totalServicesToShow = mItem.totalServices !== undefined 
+                    ? mItem.totalServices 
+                    : (mItem.productivity ? Math.round(mItem.productivity * currentPeriodDays) : 0);
+
                   return (
                     <tr key={`${mItem.contractItemId}-${idx}`} className="text-[11px]">
                       <td className="px-2 py-3 text-center font-medium">{item.itemNumber}</td>
                       <td className="px-2 py-3 font-medium text-slate-700">{item.description}</td>
-                      <td className="px-2 py-3 text-slate-500 text-[9px]">{serviceName}</td>
+                      <td className="px-2 py-3 text-slate-500 text-[9px]">
+                        <div 
+                          className="relative cursor-help select-none inline-block"
+                          onMouseEnter={() => handleMouseEnterTooltip(idx)}
+                          onMouseLeave={handleMouseLeaveTooltip}
+                        >
+                          <span className="underline decoration-dotted decoration-indigo-400 hover:text-indigo-600 transition-colors font-sans">
+                            {serviceName}
+                          </span>
+                          
+                          {/* CSS Hover Tooltip Balloon */}
+                          {hoveredServiceIdx === idx && (
+                            <div className="absolute left-0 bottom-full mb-2 bg-slate-800 text-white p-3 rounded-xl shadow-xl w-72 z-50 pointer-events-auto text-left">
+                              <div className="font-bold text-[10px] text-indigo-300 border-b border-slate-700 pb-1 mb-1 font-sans">
+                                Itens da EAP Concluídos no Período
+                              </div>
+                              {(() => {
+                                const sPath = mItem.servicePath || item.servicePath || '';
+                                const concluded = concludedItemsByService[sPath] || [];
+                                if (concluded.length === 0) {
+                                  return <div className="italic text-slate-400 text-[9px] font-sans">Nenhum item apontado no período.</div>;
+                                }
+                                return (
+                                  <ul className="list-disc pl-3.5 space-y-1 text-[9px] max-h-32 overflow-y-auto font-sans">
+                                    {concluded.map((cName, cIdx) => (
+                                      <li key={cIdx}>{cName}</li>
+                                    ))}
+                                  </ul>
+                                );
+                              })()}
+                            </div>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-2 py-3 text-center">{item.unit}</td>
                       <td className="px-2 py-3 text-center font-bold">{item.quantity}</td>
                       <td className="px-2 py-3 text-center text-slate-400">{accumPrev}</td>
-                      <td className="px-2 py-3 bg-indigo-50/30">
+                      <td className="px-2 py-3 bg-indigo-50/30 font-sans">
                         <input 
                           type="number" 
                           value={measured}
@@ -1033,19 +1350,308 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                           className="w-full px-2 py-1 bg-white border border-indigo-200 rounded text-center font-bold text-indigo-600 outline-none focus:ring-2 focus:ring-indigo-500"
                         />
                       </td>
-                      <td className="px-2 py-3 text-center font-bold text-amber-600">
-                        {mItem.productivity?.toFixed(2) || '0.00'}
+                      <td className="px-2 py-3 text-center">
+                        {isPayrollMode ? (
+                          <span className="font-bold text-amber-600 font-sans">
+                            {mItem.productivity?.toFixed(2) || '0.00'}
+                          </span>
+                        ) : (
+                          <div className="flex flex-col items-center justify-center space-y-0.5 font-sans">
+                            <span className="text-[10px] text-slate-800 font-bold bg-slate-100 px-1.5 py-0.5 rounded" title="Total de serviços concluídos no período">
+                              {totalServicesToShow} serv.
+                            </span>
+                            <span className="text-[9px] text-amber-600 font-medium whitespace-nowrap" title="Produtividade: total de serviços / dias no período">
+                              {mItem.productivity ? `${mItem.productivity.toFixed(2)}/dia` : '0.00/dia'}
+                            </span>
+                          </div>
+                        )}
                       </td>
                       <td className="px-2 py-3 text-center font-bold text-slate-700">{accumTotal}</td>
                       <td className="px-2 py-3 text-center">R$ {valUnit.toLocaleString()}</td>
                       <td className="px-2 py-3 text-center text-slate-400">R$ {valAccumPrev.toLocaleString()}</td>
-                      <td className="px-2 py-3 text-center font-bold text-emerald-600">R$ {valMedido.toLocaleString()}</td>
-                      <td className="px-2 py-3 text-center font-bold text-slate-800">R$ {valAccumTotal.toLocaleString()}</td>
+                      <td className="px-2 py-3 text-center font-bold text-emerald-600 font-sans">R$ {valMedido.toLocaleString()}</td>
+                      <td className="px-2 py-3 text-center font-bold text-slate-800 font-sans">R$ {valAccumTotal.toLocaleString()}</td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
+          </div>
+
+          {/* Itens extra contrato */}
+          <div className="space-y-4 border-t border-slate-100 pt-6">
+            <div className="flex justify-between items-center">
+              <h4 className="text-base font-bold text-slate-800 italic">Itens extra contrato</h4>
+              <button 
+                type="button"
+                onClick={handleAddExtraItem}
+                className="px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl text-xs font-bold hover:bg-indigo-100 transition-all flex items-center gap-2 shadow-sm"
+              >
+                <i className="fas fa-plus"></i> Adicionar Item Extra
+              </button>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse min-w-[1100px]">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase">
+                    <th className="px-3 py-3 font-semibold font-sans">Descrição</th>
+                    <th className="px-3 py-3 font-semibold w-40 text-center font-sans">Tipo</th>
+                    <th className="px-3 py-3 font-semibold w-48 font-sans">Categoria</th>
+                    <th className="px-3 py-3 font-semibold w-48 font-sans">Etapa de Custo</th>
+                    <th className="px-3 py-3 font-semibold w-44 text-right font-sans">V. Acumulado Anterior</th>
+                    <th className="px-3 py-3 font-semibold w-44 text-right bg-indigo-50 text-indigo-700 font-sans">Valor Medido</th>
+                    <th className="px-3 py-3 font-semibold w-44 text-right font-sans">V. Acumulado Atual</th>
+                    <th className="px-3 py-3 font-semibold w-12 text-center"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-sans">
+                  {newExtraContractItems.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} className="px-3 py-8 text-center text-slate-400 text-xs italic">
+                        Nenhum item extra adicionado nesta medição.
+                      </td>
+                    </tr>
+                  ) : (
+                    newExtraContractItems.map((item) => {
+                      const prevAccum = getExtraItemAccumulatedValue(item.description, item.type, item.category, currentMeasurementNumber);
+                      const currentAccum = prevAccum + (item.measuredValue || 0);
+
+                      const selectedProject = projects.find(p => p.id === selectedContract?.projectId);
+                      const costStructure = selectedProject?.costStructure || [];
+
+                      return (
+                        <tr key={item.id} className="text-[11px] align-middle hover:bg-slate-50/50 transition-colors">
+                          <td className="px-3 py-2 font-sans">
+                            <input
+                              type="text"
+                              value={item.description}
+                              onChange={(e) => handleUpdateExtraItem(item.id, 'description', e.target.value)}
+                              className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-500 text-slate-700 font-medium"
+                              placeholder="Ex: Combustível, Hospedagem..."
+                            />
+                          </td>
+                          <td className="px-3 py-2 text-center font-sans">
+                            <select
+                              value={item.type}
+                              onChange={(e) => handleUpdateExtraItem(item.id, 'type', e.target.value)}
+                              className="px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-700"
+                            >
+                              <option value="acréscimo">Acréscimo (+)</option>
+                              <option value="desconto">Desconto (-)</option>
+                            </select>
+                          </td>
+                          <td className="px-3 py-2 font-sans">
+                            <select
+                              value={item.category}
+                              onChange={(e) => handleUpdateExtraItem(item.id, 'category', e.target.value)}
+                              className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-500 text-slate-700"
+                            >
+                              {EXTRA_CATEGORIES.map(cat => (
+                                <option key={cat} value={cat}>{cat}</option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="px-3 py-2 font-sans">
+                            <select
+                              value={item.stagePath || ''}
+                              onChange={(e) => handleUpdateExtraItem(item.id, 'stagePath', e.target.value)}
+                              className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-500 text-slate-700 font-sans"
+                            >
+                              <option value="">Selecione a Etapa</option>
+                              {costStructure.map(cc => 
+                                cc.stages.map(st => (
+                                  <option key={`${cc.id}|${st.id}`} value={`${cc.id}|${st.id}`}>
+                                    {cc.name} &gt; {st.name}
+                                  </option>
+                                ))
+                              )}
+                            </select>
+                          </td>
+                          <td className="px-3 py-2 text-right font-medium text-slate-500 font-sans">
+                            R$ {prevAccum.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                          <td className="px-3 py-2 bg-indigo-50/30 font-sans">
+                            <div className="relative font-sans">
+                              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] text-indigo-400 font-bold font-sans">R$</span>
+                              <input
+                                type="number"
+                                step="0.01"
+                                value={item.measuredValue || ''}
+                                onChange={(e) => handleUpdateExtraItem(item.id, 'measuredValue', parseFloat(e.target.value) || 0)}
+                                className="w-full pl-8 pr-2 py-1.5 bg-white border border-indigo-200 rounded-lg text-right font-bold text-indigo-600 outline-none focus:ring-2 focus:ring-indigo-500 font-sans"
+                                placeholder="0,00"
+                              />
+                            </div>
+                          </td>
+                          <td className={`px-3 py-2 text-right font-bold ${item.type === 'desconto' ? 'text-rose-600' : 'text-emerald-600'} font-sans`}>
+                            R$ {currentAccum.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                          <td className="px-3 py-2 text-center font-sans">
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveExtraItem(item.id)}
+                              className="text-rose-500 hover:text-rose-700 transition"
+                              title="Remover"
+                            >
+                              <i className="fas fa-trash"></i>
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Subtotal & Totais Visual Indicator for New Measurement */}
+            {newExtraContractItems.length > 0 && (
+              <div className="flex justify-end pt-2">
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 w-80 space-y-2 text-xs">
+                  <div className="flex justify-between text-slate-500">
+                    <span>Subtotal Contrato:</span>
+                    <span className="font-semibold">
+                      R$ {newMeasurementItems.reduce((acc, mi) => {
+                        const item = selectedContract.items.find(i => i.id === mi.contractItemId);
+                        return acc + ((mi.measuredQuantity || 0) * (item?.unitValue || 0));
+                      }, 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-emerald-600">
+                    <span>Acréscimos Extra:</span>
+                    <span className="font-semibold">
+                      + R$ {newExtraContractItems.filter(e => e.type === 'acréscimo').reduce((acc, e) => acc + (e.measuredValue || 0), 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-rose-600">
+                    <span>Descontos Extra:</span>
+                    <span className="font-semibold">
+                      - R$ {newExtraContractItems.filter(e => e.type === 'desconto').reduce((acc, e) => acc + (e.measuredValue || 0), 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  <div className="w-full h-px bg-slate-200 my-1"></div>
+                  <div className="flex justify-between text-sm font-bold text-slate-800">
+                    <span>Total da Medição:</span>
+                    <span>
+                      R$ {(() => {
+                        const baseTotal = newMeasurementItems.reduce((acc, mi) => {
+                          const item = selectedContract.items.find(i => i.id === mi.contractItemId);
+                          return acc + ((mi.measuredQuantity || 0) * (item?.unitValue || 0));
+                        }, 0);
+                        const additions = newExtraContractItems.filter(e => e.type === 'acréscimo').reduce((acc, e) => acc + (e.measuredValue || 0), 0);
+                        const deductions = newExtraContractItems.filter(e => e.type === 'desconto').reduce((acc, e) => acc + (e.measuredValue || 0), 0);
+                        return (baseTotal + additions - deductions);
+                      })().toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Dynamic Stage Summary table for active measurement editing */}
+          <div className="space-y-4 border-t border-slate-100 pt-6">
+            <h4 className="text-base font-bold text-slate-800 italic">Resumo por Etapa (Medição Atual)</h4>
+            <div className="overflow-x-auto max-w-full">
+              <table className="w-full text-left border-collapse min-w-[600px] border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase">
+                    <th className="px-4 py-3 font-sans">Etapa de Custo</th>
+                    <th className="px-4 py-3 text-right font-sans">Valor Medido nesta Medição</th>
+                    <th className="px-4 py-3 text-center font-sans">% em Relação ao Total</th>
+                    <th className="px-4 py-3 text-right font-sans">Valor Acumulado Total (Inc. Anteriores)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {(() => {
+                    // Calculate the stage summary dynamically based on current edit state
+                    const editStageSummary: { [key: string]: { name: string, current: number, total: number } } = {};
+                    let totalCurrentValue = 0;
+
+                    // 1. Core items
+                    newMeasurementItems.forEach(mi => {
+                      const item = selectedContract.items.find(i => i.id === mi.contractItemId);
+                      if (!item) return;
+                      const measuredValue = (mi.measuredQuantity || 0) * item.unitValue;
+                      const accumPrev = getAccumulatedQuantity(item.id, currentMeasurementNumber);
+                      const totalValue = (accumPrev + (mi.measuredQuantity || 0)) * item.unitValue;
+                      
+                      totalCurrentValue += measuredValue;
+
+                      let stageName = 'Outros';
+                      if (item.servicePath) {
+                        const [ccId, stId] = item.servicePath.split('|');
+                        const project = projects.find(p => p.id === selectedContract.projectId);
+                        const cc = project?.costStructure?.find(c => c.id === ccId);
+                        const st = cc?.stages.find(s => s.id === stId);
+                        if (st) stageName = st.name;
+                      }
+
+                      if (!editStageSummary[stageName]) {
+                        editStageSummary[stageName] = { name: stageName, current: 0, total: 0 };
+                      }
+                      editStageSummary[stageName].current += measuredValue;
+                      editStageSummary[stageName].total += totalValue;
+                    });
+
+                    // 2. Extra items from current edit state
+                    newExtraContractItems.forEach(eItem => {
+                      const signedValue = eItem.type === 'desconto' ? -eItem.measuredValue : eItem.measuredValue;
+                      const prevAccum = getExtraItemAccumulatedValue(eItem.description, eItem.type, eItem.category, currentMeasurementNumber);
+                      const totalValue = prevAccum + signedValue;
+
+                      totalCurrentValue += signedValue;
+
+                      let stageName = 'Outros';
+                      if (eItem.stagePath) {
+                        const [ccId, stId] = eItem.stagePath.split('|');
+                        const project = projects.find(p => p.id === selectedContract.projectId);
+                        const cc = project?.costStructure?.find(c => c.id === ccId);
+                        const st = cc?.stages.find(s => s.id === stId);
+                        if (st) stageName = st.name;
+                      }
+
+                      if (!editStageSummary[stageName]) {
+                        editStageSummary[stageName] = { name: stageName, current: 0, total: 0 };
+                      }
+                      editStageSummary[stageName].current += signedValue;
+                      editStageSummary[stageName].total += totalValue;
+                    });
+
+                    const list = Object.values(editStageSummary).map(s => ({
+                      ...s,
+                      percentage: totalCurrentValue !== 0 ? (s.current / totalCurrentValue) * 100 : 0
+                    })).sort((a, b) => b.current - a.current);
+
+                    if (list.length === 0) {
+                      return (
+                        <tr>
+                          <td colSpan={4} className="px-4 py-8 text-center text-slate-400 text-xs italic font-sans">
+                            Defina quantidades para calcular o resumo por etapa.
+                          </td>
+                        </tr>
+                      );
+                    }
+
+                    return list.map((s, idx) => (
+                      <tr key={idx} className="text-[11px] hover:bg-slate-50/50 transition-colors font-sans">
+                        <td className="px-4 py-2.5 font-bold text-slate-700">{s.name}</td>
+                        <td className="px-4 py-2.5 text-right font-semibold text-slate-900 font-sans">
+                          R$ {s.current.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                        <td className="px-4 py-2.5 text-center font-bold text-indigo-600">
+                          {s.percentage.toFixed(2)}%
+                        </td>
+                        <td className="px-4 py-2.5 text-right font-bold text-slate-800 font-sans">
+                          R$ {s.total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                      </tr>
+                    ));
+                  })()}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           <div>
@@ -1139,7 +1745,7 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                 <div className="w-1/4 p-1 flex flex-col justify-between">
                   <div className="flex justify-between">
                     <span className="font-bold text-[7px] uppercase">MEDIÇÃO N°:</span>
-                    <span className="font-bold">{selectedContract.number} - {selectedMeasurement.measurementNumber.toString().padStart(3, '0')}</span>
+                    <span className="font-bold">{selectedContract.number}-{selectedMeasurement.measurementNumber.toString().padStart(2, '0')}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="font-bold text-[7px] uppercase">DATA:</span>
@@ -1236,6 +1842,37 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                   ))}
                 </tbody>
               </table>
+
+              {/* Printable Itens Extra Contrato */}
+              {selectedMeasurement.extraItems && selectedMeasurement.extraItems.length > 0 && (
+                <div className="mt-4 border border-black">
+                  <div className="bg-slate-100 border-b border-black px-2 py-1 font-bold text-[7px] uppercase font-sans">Itens Extra Contrato</div>
+                  <table className="w-full text-[6px]">
+                    <thead>
+                      <tr className="border-b border-black font-bold uppercase">
+                        <th className="border-r border-black px-2 py-1 text-left">DESCRIÇÃO</th>
+                        <th className="border-r border-black px-2 py-1 text-center w-24">TIPO</th>
+                        <th className="border-r border-black px-2 py-1 text-center w-32">CATEGORIA</th>
+                        <th className="border-r border-black px-2 py-1 text-right w-24">V. ACUM. ANT.</th>
+                        <th className="border-r border-black px-2 py-1 text-right w-24">V. MEDIDO</th>
+                        <th className="px-2 py-1 text-right w-24">V. ACUM. ATUAL</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedMeasurement.extraItems.map((item, i) => (
+                        <tr key={i} className="border-b border-black last:border-0 leading-tight">
+                          <td className="border-r border-black px-2 py-1 font-semibold">{item.description}</td>
+                          <td className="border-r border-black px-2 py-1 text-center font-bold capitalize">{item.type}</td>
+                          <td className="border-r border-black px-2 py-1 text-center">{item.category}</td>
+                          <td className="border-r border-black px-2 py-1 text-right">R$ {item.prevAccumulated.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className="border-r border-black px-1.5 py-1 text-right font-bold">R$ {item.measuredValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className="px-1.5 py-1 text-right font-bold text-slate-800">R$ {item.currentAccumulated.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
               
               {/* Stage Summary */}
               <div className="mt-4 border border-black">
@@ -1263,7 +1900,7 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
               </div>
 
               {/* Footer */}
-              <div className="border-x border-b border-black flex h-20">
+              <div className="border-x border-b border-black flex h-24">
                 <div className="w-2/3 border-r border-black p-2 flex flex-col">
                   <div className="font-bold text-[7px] uppercase mb-1">Observações:</div>
                   <div className="text-[8px] flex-1 italic">{selectedMeasurement.observations || 'Nenhuma observação.'}</div>
@@ -1272,19 +1909,32 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                   <div className="flex-1 flex border-b border-black">
                     <div className="w-1/2 border-r border-black flex items-center justify-center font-bold text-[7px] uppercase">Total da Medição</div>
                     <div className="w-1/2 flex items-center justify-center font-bold text-[10px]">
-                      R$ {selectedMeasurement.items.reduce((acc, mi) => {
-                        const item = selectedContract.items.find(i => i.id === mi.contractItemId);
-                        return acc + (mi.measuredQuantity * (item?.unitValue || 0));
-                      }, 0).toLocaleString()}
+                      R$ {(() => {
+                        const baseTotal = selectedMeasurement.items.reduce((acc, mi) => {
+                          const item = selectedContract.items.find(i => i.id === mi.contractItemId);
+                          return acc + (mi.measuredQuantity * (item?.unitValue || 0));
+                        }, 0);
+                        const additions = (selectedMeasurement.extraItems || []).filter(e => e.type === 'acréscimo').reduce((acc, e) => acc + (e.measuredValue || 0), 0);
+                        const deductions = (selectedMeasurement.extraItems || []).filter(e => e.type === 'desconto').reduce((acc, e) => acc + (e.measuredValue || 0), 0);
+                        return (baseTotal + additions - deductions);
+                      })().toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
                   </div>
                   <div className="flex-1 flex border-b border-black">
                     <div className="w-1/2 border-r border-black flex items-center justify-center font-bold text-[7px] uppercase">Total Acumulado</div>
                     <div className="w-1/2 flex items-center justify-center font-bold text-[10px]">
-                      R$ {selectedContract.items.reduce((acc, item) => {
-                        const accumTotal = getAccumulatedQuantity(item.id, selectedMeasurement.measurementNumber) + (selectedMeasurement.items.find(mi => mi.contractItemId === item.id)?.measuredQuantity || 0);
-                        return acc + (accumTotal * item.unitValue);
-                      }, 0).toLocaleString()}
+                      R$ {(() => {
+                        const baseAccumTotal = selectedContract.items.reduce((acc, item) => {
+                          const accumTotal = getAccumulatedQuantity(item.id, selectedMeasurement.measurementNumber) + (selectedMeasurement.items.find(mi => mi.contractItemId === item.id)?.measuredQuantity || 0);
+                          return acc + (accumTotal * item.unitValue);
+                        }, 0);
+                        const extraAccumTotal = measurements.filter(m => m.contractId === selectedContract.id && m.measurementNumber <= selectedMeasurement.measurementNumber).reduce((sum, m) => {
+                          const additions = (m.extraItems || []).filter(e => e.type === 'acréscimo').reduce((acc, e) => acc + (e.measuredValue || 0), 0);
+                          const deductions = (m.extraItems || []).filter(e => e.type === 'desconto').reduce((acc, e) => acc + (e.measuredValue || 0), 0);
+                          return sum + additions - deductions;
+                        }, 0);
+                        return (baseAccumTotal + extraAccumTotal);
+                      })().toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
                   </div>
                   <div className="flex-1 flex flex-col p-1 text-[7px]">
