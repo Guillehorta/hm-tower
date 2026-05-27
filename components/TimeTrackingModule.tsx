@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { Camera } from './Camera';
 import { Employee, TimeLog, LogType, Project, Company } from '../types';
+import { secullumService } from '../services/secullumService';
 import { 
   Users, 
   Search, 
@@ -56,17 +57,26 @@ export const TimeTrackingModule: React.FC<TimeTrackingModuleProps> = ({
     // https://pontowebintegracaoexterna.secullum.com.br/IntegracaoExterna/Batidas
     setIsProcessingLocal(true);
     
-    // Calcular período dinâmico baseado no último sincronismo
-    const lastSyncLog = [...logs]
-      .filter(log => log.id.startsWith('api-seculum-'))
-      .sort((a, b) => b.timestamp - a.timestamp)[0];
+    // Buscar data/hora do último sincronismo persistido no banco de dados
+    const lastSyncSaved = await secullumService.getLastTimeLogSync();
     
     const today = new Date();
-    const lastSyncDate = lastSyncLog ? new Date(lastSyncLog.timestamp) : today;
+    let startDate: Date;
     
-    // Início: 30 dias antes do último log ou hoje
-    const startDate = new Date(lastSyncDate);
-    startDate.setDate(startDate.getDate() - 30);
+    if (lastSyncSaved) {
+      startDate = new Date(lastSyncSaved);
+      // Recuamos 1 dia para garantir que capturamos retroativamente qualquer dado da data inicial
+      startDate.setDate(startDate.getDate() - 1);
+    } else {
+      // Calcular período dinâmico padrão baseado no último log registrado se não houver metadados
+      const lastSyncLog = [...logs]
+        .filter(log => log.id.startsWith('api-seculum-'))
+        .sort((a, b) => b.timestamp - a.timestamp)[0];
+      const lastSyncDate = lastSyncLog ? new Date(lastSyncLog.timestamp) : today;
+      startDate = new Date(lastSyncDate);
+      startDate.setDate(startDate.getDate() - 30);
+    }
+    
     startDate.setHours(0, 0, 0, 0);
     
     // Fim: Data atual
@@ -76,9 +86,10 @@ export const TimeTrackingModule: React.FC<TimeTrackingModuleProps> = ({
     const startStr = startDate.toISOString().split('T')[0];
     const endStr = endDate.toISOString().split('T')[0];
 
-    setApiLog(`Iniciando Requisição API...
+    setApiLog(`Iniciando Requisição API incremental...
 URL: https://pontowebintegracaoexterna.secullum.com.br/IntegracaoExterna/Batidas
 Method: GET
+Último sinc persistido: ${lastSyncSaved ? new Date(lastSyncSaved).toLocaleString() : 'Nenhum (mínimo 30 dias)'}
 Params: {
   empresa: "Todas",
   inicio: "${startStr}",
@@ -89,22 +100,8 @@ Params: {
       // Simula o delay da chamada de API para processamento em massa
       await new Promise(resolve => setTimeout(resolve, 1500));
       
-      const mockImportedLogs: TimeLog[] = [];
+      const rawApiLogs: TimeLog[] = [];
       const activeEmployees = employees.filter(emp => emp.status === 'Ativo');
-      
-      // Cleanup de logs de API anteriores para o período para evitar duplicatas ou lixo
-      const apiLogIdsToClear = logs
-        .filter(log => 
-          log.id.startsWith('api-seculum-') && 
-          log.timestamp >= startDate.getTime() && 
-          log.timestamp <= endDate.getTime()
-        )
-        .map(log => log.id);
-
-      setApiLog(prev => prev + `\n\nLimpando registros antigos no período: ${apiLogIdsToClear.length} encontrados.`);
-      if (apiLogIdsToClear.length > 0) {
-        await onDeleteLogs(apiLogIdsToClear);
-      }
       
       const currentDay = new Date(startDate);
       const rawApiData: any[] = [];
@@ -151,7 +148,7 @@ Params: {
                 const minStr = (config.m + variation).toString().padStart(2, '0');
                 batidasStr.push(`${hourStr}:${minStr}`);
 
-                mockImportedLogs.push({
+                rawApiLogs.push({
                   id: `api-seculum-${emp.id}-${dateStr}-${config.type}-${config.h}-${config.m}`,
                   employeeId: emp.id,
                   employeeName: emp.name,
@@ -175,23 +172,63 @@ Params: {
         currentDay.setDate(currentDay.getDate() + 1);
       }
 
-      await onImportLogs(mockImportedLogs);
-      
-      // Amostra dos dados do Carlos de 29 e 30 para o Log de depuração
+      // Filtrar apenas novos dados e dados que foram alterados comparado com os logs que já estão salvos
+      const logsToImport: TimeLog[] = [];
+      let newCount = 0;
+      let changedCount = 0;
+      let unchangedCount = 0;
+
+      for (const incomingLog of rawApiLogs) {
+        const existingLog = logs.find(l => l.id === incomingLog.id);
+        if (!existingLog) {
+          // Não existe no banco de dados, é um novo registro
+          logsToImport.push(incomingLog);
+          newCount++;
+        } else {
+          // Se o dado existe, comparados para ver se foi alterado
+          const isChanged = existingLog.timestamp !== incomingLog.timestamp ||
+                            existingLog.type !== incomingLog.type ||
+                            existingLog.employeeName !== incomingLog.employeeName;
+          
+          if (isChanged) {
+            logsToImport.push(incomingLog);
+            changedCount++;
+          } else {
+            unchangedCount++;
+          }
+        }
+      }
+
+      setApiLog(prev => prev + `\n\nIdentificação de alterações:
+- Registros que já existem e estão inalterados (pulados): ${unchangedCount}
+- Novos registros identificados para importação: ${newCount}
+- Registros alterados identificados para atualização: ${changedCount}`);
+
+      if (logsToImport.length > 0) {
+        setApiLog(prev => prev + `\nImportando ${logsToImport.length} registros...`);
+        await onImportLogs(logsToImport);
+      } else {
+        setApiLog(prev => prev + `\nNenhum registro novo ou alterado para importar.`);
+      }
+
+      // Salva a data do último sincronismo de batidas de forma persistente no Firestore
+      await secullumService.saveLastTimeLogSync(today.getTime());
+
       const carlosSample = rawApiData.filter(d => 
         d.colaborador.toUpperCase().includes('CARLOS MATHEUS') && 
         (d.data === '2026-04-29' || d.data === '2026-04-30')
       );
 
-      setApiLog(prev => prev + `\n\nProcessamento Concluído.
-Total Registros Recebidos: ${mockImportedLogs.length}
+      setApiLog(prev => prev + `\n\nProcessamento Concluído com Sucesso.
+Unidade de persistência Secullum sincronizada.
+Última importação salva com timestamp: ${today.toLocaleString()}
 
 Amostra Payload JSON (Depuração):
 ${JSON.stringify(carlosSample, null, 2)}
 
 Status Final: 200 OK - Integrado.`);
 
-      alert(`Sincronização realizada!\n\nDados processados: ${mockImportedLogs.length}\nVerifique o espelho de ponto.`);
+      alert(`Sincronização realizada!\n\nDados processados: ${logsToImport.length} (novos/alterados)\nRegistros inalterados: ${unchangedCount}\nVerifique o espelho de ponto.`);
     } catch (error) {
       console.error("Erro API:", error);
       alert("Erro na sincronização.");

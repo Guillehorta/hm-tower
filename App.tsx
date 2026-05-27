@@ -112,6 +112,7 @@ const App: React.FC = () => {
   const [newProjectLatitude, setNewProjectLatitude] = useState<number | undefined>(undefined);
   const [newProjectLongitude, setNewProjectLongitude] = useState<number | undefined>(undefined);
   const [newProjectStatus, setNewProjectStatus] = useState<'Ativa' | 'Inativa'>('Ativa');
+  const [newProjectManagerId, setNewProjectManagerId] = useState<string>('');
   const [newProjectConstructionUnits, setNewProjectConstructionUnits] = useState<ConstructionUnit[]>([]);
   const [newProjectCostStructure, setNewProjectCostStructure] = useState<CostCenter[]>([]);
   const [newProjectFvsMapping, setNewProjectFvsMapping] = useState<{ [servicePath: string]: string }>({});
@@ -218,11 +219,8 @@ const App: React.FC = () => {
     const unsubLogs = storageService.subscribeLogs(setLogs);
     const unsubSecullum = secullumService.subscribeSecullumEmployees(setSecullumEmployees);
 
-    // Only Admin and Gestor can see the user list
-    let unsubUsers = () => {};
-    if (isManagerOrAdmin) {
-      unsubUsers = storageService.subscribeUsers(setUsers);
-    }
+    // All authenticated users subscribe to user list to resolve managers
+    const unsubUsers = storageService.subscribeUsers(setUsers);
 
     return () => {
       unsubFvs();
@@ -587,6 +585,7 @@ const App: React.FC = () => {
       city: newProjectCity,
       latitude: newProjectLatitude,
       longitude: newProjectLongitude,
+      managerId: newProjectManagerId || undefined,
       createdAt: Date.now()
     };
 
@@ -598,6 +597,7 @@ const App: React.FC = () => {
     setNewProjectLatitude(undefined);
     setNewProjectLongitude(undefined);
     setNewProjectStatus('Ativa');
+    setNewProjectManagerId('');
     setNewProjectConstructionUnits([]);
     setNewProjectCostStructure([]);
     setNewProjectFvsMapping({});
@@ -613,6 +613,7 @@ const App: React.FC = () => {
     setNewProjectLatitude(proj.latitude);
     setNewProjectLongitude(proj.longitude);
     setNewProjectStatus(proj.status);
+    setNewProjectManagerId(proj.managerId || '');
     setNewProjectConstructionUnits(proj.constructionUnits || []);
     setNewProjectCostStructure(proj.costStructure || []);
     setNewProjectFvsMapping(proj.fvsMapping || {});
@@ -1653,6 +1654,18 @@ const App: React.FC = () => {
                               </span>
                             </div>
                             <p className="text-xs text-slate-500 truncate">Código: {proj.code}</p>
+                            {(() => {
+                              const gestor = users.find(u => u.id === proj.managerId);
+                              if (gestor) {
+                                return (
+                                  <p className="text-[10px] text-indigo-600 font-semibold truncate mt-0.5">
+                                    <i className="fas fa-user-cog mr-1"></i>
+                                    Gestor: {gestor.name}
+                                  </p>
+                                );
+                              }
+                              return null;
+                            })()}
                             <div className="mt-1 flex flex-wrap gap-2">
                               {proj.constructionUnits && proj.constructionUnits.length > 0 && (
                                 <div className="flex items-center gap-1 text-[9px] text-indigo-500 font-bold uppercase">
@@ -1798,6 +1811,21 @@ const App: React.FC = () => {
                           <span className="text-sm font-medium text-slate-700 group-hover:text-rose-600 transition">Inativa</span>
                         </label>
                       </div>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-bold text-slate-700 mb-2 uppercase tracking-wide">Gestor da Obra</label>
+                      <select
+                        value={newProjectManagerId}
+                        onChange={(e) => setNewProjectManagerId(e.target.value)}
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition font-sans"
+                      >
+                        <option value="">Selecione o gestor...</option>
+                        {users.map(u => (
+                          <option key={u.id} value={u.id}>
+                            {u.name} ({u.role})
+                          </option>
+                        ))}
+                      </select>
                     </div>
                   </div>
 
@@ -2813,6 +2841,7 @@ const App: React.FC = () => {
                   companies={userCompanies}
                   projects={userProjects}
                   suppliers={suppliers}
+                  users={users}
                   employees={employees}
                   laborTracking={trackings}
                   onSaveContract={handleSaveContract}

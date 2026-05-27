@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef } from 'react';
-import { Contract, ContractMeasurement, Company, Project, ContractItem, MeasurementItem, Supplier, Employee, LaborTracking, ExtraMeasurementItem } from '../types';
+import { Contract, ContractMeasurement, Company, Project, ContractItem, MeasurementItem, Supplier, Employee, LaborTracking, ExtraMeasurementItem, User } from '../types';
 import { generateId } from '../src/lib/utils';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
@@ -12,6 +12,8 @@ interface ContractMeasurementsProps {
   companies: Company[];
   projects: Project[];
   suppliers: Supplier[];
+  users: User[];
+  currentUser?: User;
   employees: Employee[];
   laborTracking: LaborTracking[];
   onSaveContract: (contract: Contract) => void;
@@ -42,6 +44,8 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
   companies,
   projects,
   suppliers,
+  users,
+  currentUser,
   employees,
   laborTracking,
   onSaveContract,
@@ -113,6 +117,83 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
     [contracts, selectedContractId]
   );
 
+  const isPayrollActive = selectedContract?.number.startsWith('FP-') || false;
+
+  const colWidths = useMemo<Record<string, string>>(() => {
+    return isPayrollActive ? {
+      item: '3.333%',
+      description: '20.000%',
+      servicio: '20.000%',
+      un: '2.778%',
+      qt1: '5.000%', // QT. AC. ANT.
+      qt2: '5.000%', // QT. MEDIDO
+      prod: '5.000%', // PROD.
+      qt3: '5.000%', // QT. AC. ATUAL
+      vunit: '7.222%', // V. UNIT.
+      extras: '6.111%', // EXTRAS
+      vacPrev: '7.222%', // V. AC. ANT.
+      vmed: '7.222%', // V. MEDIDO
+      vacTotal: '6.112%', // V. AC. TOTAL
+    } : {
+      item: '3.333%',
+      description: '20.000%',
+      servicio: '20.000%',
+      un: '2.778%',
+      qt0: '5.000%', // QT. CONT.
+      qt1: '5.000%', // QT. AC. ANT.
+      qt2: '5.000%', // QT. MEDIDO
+      prod: '5.000%', // PROD.
+      qt3: '5.000%', // QT. AC. ATUAL
+      vunit: '7.222%', // V. UNIT.
+      vacPrev: '7.222%', // V. AC. ANT.
+      vmed: '7.222%', // V. MEDIDO
+      vacTotal: '7.223%', // V. AC. TOTAL
+    };
+  }, [isPayrollActive]);
+
+  const summaryColWidths = useMemo(() => {
+    const { vacPrev, vmed, vacTotal } = colWidths;
+    const prevVal = parseFloat(vacPrev);
+    const medVal = parseFloat(vmed);
+    const totalVal = parseFloat(vacTotal);
+    
+    const sumRight = prevVal + medVal + totalVal;
+    
+    return {
+      left: `${100 - sumRight}%`,
+      colPrev: vacPrev,
+      colMed: vmed,
+      colTotal: vacTotal,
+      footerLabel: `${((prevVal + medVal) / sumRight) * 100}%`,
+      footerValue: `${(totalVal / sumRight) * 100}%`,
+      footerLeft: `${100 - sumRight}%`,
+      footerRight: `${sumRight}%`,
+    };
+  }, [colWidths]);
+
+  const extraColWidths = useMemo(() => {
+    const { vacPrev, vmed, vacTotal } = colWidths;
+    const prevVal = parseFloat(vacPrev);
+    const medVal = parseFloat(vmed);
+    const totalVal = parseFloat(vacTotal);
+    
+    const sumRight = prevVal + medVal + totalVal;
+    const leftSpace = 100 - sumRight;
+    
+    const tipo = '12.000%';
+    const categoria = '15.000%';
+    const descricao = `${leftSpace - 12 - 15}%`;
+    
+    return {
+      description: descricao,
+      type: tipo,
+      category: categoria,
+      prev: vacPrev,
+      med: vmed,
+      total: vacTotal,
+    };
+  }, [colWidths]);
+
   const contractMeasurements = useMemo(() => 
     measurements.filter(m => m.contractId === selectedContractId)
       .sort((a, b) => b.measurementNumber - a.measurementNumber),
@@ -157,6 +238,26 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
         i.contractItemId === contractItemId && (!servicePath || i.servicePath === servicePath)
       );
       return acc + items.reduce((sum, i) => sum + (i.measuredQuantity || 0), 0);
+    }, 0);
+  };
+
+  const getAccumulatedValue = (contractItemId: string, upToMeasurementNumber: number, servicePath?: string) => {
+    const prevMeasurements = measurements.filter(m => 
+      m.contractId === selectedContractId && m.measurementNumber < upToMeasurementNumber
+    );
+    
+    return prevMeasurements.reduce((acc, m) => {
+      const items = m.items.filter(i => 
+        i.contractItemId === contractItemId && (!servicePath || i.servicePath === servicePath)
+      );
+      return acc + items.reduce((sum, prevItem) => {
+        const cItem = selectedContract?.items.find(ci => ci.id === prevItem.contractItemId);
+        const valUnit = cItem?.unitValue || 0;
+        const prevMeasuredQty = prevItem.measuredQuantity || 0;
+        const prevExtra = prevItem.extraValue || 0;
+        const prevMeasuredValue = (prevMeasuredQty * valUnit) + prevExtra;
+        return sum + prevMeasuredValue;
+      }, 0);
     }, 0);
   };
 
@@ -227,19 +328,23 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
     
     const summary: { [key: string]: { name: string, current: number, total: number } } = {};
     let totalCurrentValue = 0;
+    const isPayroll = selectedContract.number.startsWith('FP-');
 
     // 1. Core items
     selectedContract.items.forEach(item => {
       const mItem = selectedMeasurement.items.find(mi => mi.contractItemId === item.id);
-      const measuredValue = (mItem?.measuredQuantity || 0) * item.unitValue;
-      const accumPrev = getAccumulatedQuantity(item.id, selectedMeasurement.measurementNumber);
-      const totalValue = (accumPrev + (mItem?.measuredQuantity || 0)) * item.unitValue;
+      const measuredValue = (mItem?.measuredQuantity || 0) * item.unitValue + (isPayroll ? (mItem?.extraValue || 0) : 0);
+      const accumPrevVal = isPayroll
+        ? getAccumulatedValue(item.id, selectedMeasurement.measurementNumber, mItem?.servicePath)
+        : getAccumulatedQuantity(item.id, selectedMeasurement.measurementNumber) * item.unitValue;
+      const totalValue = accumPrevVal + measuredValue;
       
       totalCurrentValue += measuredValue;
 
       let stageName = 'Outros';
-      if (item.servicePath) {
-        const [ccId, stId] = item.servicePath.split('|');
+      const svcPath = mItem?.servicePath || item.servicePath;
+      if (svcPath) {
+        const [ccId, stId] = svcPath.split('|');
         const project = projects.find(p => p.id === selectedContract.projectId);
         const cc = project?.costStructure?.find(c => c.id === ccId);
         const st = cc?.stages.find(s => s.id === stId);
@@ -254,7 +359,7 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
     });
 
     // 2. Extra items
-    if (selectedMeasurement.extraItems) {
+    if (!isPayroll && selectedMeasurement.extraItems) {
       selectedMeasurement.extraItems.forEach(eItem => {
         const signedValue = eItem.type === 'desconto' ? -eItem.measuredValue : eItem.measuredValue;
         const prevAccum = eItem.prevAccumulated || 0;
@@ -284,6 +389,41 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
       percentage: totalCurrentValue !== 0 ? (s.current / totalCurrentValue) * 100 : 0
     })).sort((a, b) => b.current - a.current);
   }, [selectedMeasurement, selectedContract, projects, measurements]);
+
+  const colabSummary = useMemo(() => {
+    if (!selectedMeasurement || !selectedContract) return [];
+    
+    const summary: { [key: string]: { name: string, cpf: string, pix: string, days: number, current: number, total: number } } = {};
+    const isPayroll = selectedContract.number.startsWith('FP-');
+    if (!isPayroll) return [];
+
+    selectedContract.items.forEach(item => {
+      const mItem = selectedMeasurement.items.find(mi => mi.contractItemId === item.id);
+      const measuredQty = mItem?.measuredQuantity || 0;
+      const valUnit = item.unitValue;
+      const measuredValue = (measuredQty * valUnit) + (mItem?.extraValue || 0);
+      const accumPrevVal = getAccumulatedValue(item.id, selectedMeasurement.measurementNumber, mItem?.servicePath);
+      const totalValue = accumPrevVal + measuredValue;
+
+      const colabName = item.description;
+      if (!summary[colabName]) {
+        const emp = employees.find(e => e.name === colabName);
+        summary[colabName] = { 
+          name: colabName, 
+          cpf: emp?.cpf || 'N/A', 
+          pix: emp?.pixKey || 'N/A', 
+          days: 0, 
+          current: 0, 
+          total: 0 
+        };
+      }
+      summary[colabName].days += measuredQty;
+      summary[colabName].current += measuredValue;
+      summary[colabName].total += totalValue;
+    });
+
+    return Object.values(summary).sort((a, b) => b.current - a.current);
+  }, [selectedMeasurement, selectedContract, projects, measurements, employees]);
 
   const handleStartNewContract = (mode: 'contract' | 'payroll' = 'contract') => {
     const prefix = mode === 'contract' ? 'CT-' : 'FP-';
@@ -338,7 +478,7 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
       description: '',
       servicePath: '',
       unit: '',
-      quantity: 0,
+      quantity: isPayrollMode ? 1 : 0,
       unitValue: 0
     };
     setNewContract(prev => ({
@@ -390,6 +530,10 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
       };
     });
 
+    const projectObj = selectedContract ? projects.find(p => p.id === selectedContract.projectId) : null;
+    const managerObj = projectObj?.managerId ? users.find(u => u.id === projectObj.managerId) : null;
+    const fallbackManagerName = managerObj?.name || 'Gestor da Obra';
+
     const measurement: ContractMeasurement = {
       id: isEditing ? selectedMeasurementId! : generateId(),
       contractId: selectedContractId,
@@ -402,6 +546,7 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
       extraItems: extraItemsWithAccumulated,
       observations: measurementObs,
       status: 'completed',
+      finalizedBy: currentUser?.name || selectedMeasurement?.finalizedBy || fallbackManagerName,
       createdAt: isEditing ? selectedMeasurement?.createdAt || Date.now() : Date.now()
     };
     
@@ -439,27 +584,54 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
 
         const employeeTrackings = filteredTrackings.filter(t => t.employeeId === employee.id);
         
-        // Group by service
-        const serviceGroups: { [key: string]: { dates: Set<string>, components: Set<string> } } = {};
-
+        // Group trackings by date to distribute day proportionally if multiple services pointed on same day
+        const trackingsByDate: { [date: string]: typeof employeeTrackings } = {};
         employeeTrackings.forEach(t => {
-          const services = t.costStructureSelections || [];
-          services.forEach(s => {
-            if (!serviceGroups[s]) {
-              serviceGroups[s] = { dates: new Set(), components: new Set() };
-            }
-            serviceGroups[s].dates.add(t.date);
-            t.selections.forEach(c => serviceGroups[s].components.add(c));
-          });
+          if (!trackingsByDate[t.date]) {
+            trackingsByDate[t.date] = [];
+          }
+          trackingsByDate[t.date].push(t);
         });
 
-        Object.entries(serviceGroups).forEach(([servicePath, data]) => {
-          const daysWorked = data.dates.size;
-          const productivity = daysWorked > 0 ? data.components.size / daysWorked : 0;
+        const serviceContributions: { [servicePath: string]: number } = {};
+        const serviceComponents: { [servicePath: string]: Set<string> } = {};
+
+        Object.entries(trackingsByDate).forEach(([date, trackings]) => {
+          const servicePathsOnDate = new Set<string>();
+          trackings.forEach(t => {
+            t.costStructureSelections?.forEach(s => {
+              servicePathsOnDate.add(s);
+            });
+          });
+
+          if (servicePathsOnDate.size > 0) {
+            const dayContribution = 1.0 / servicePathsOnDate.size;
+            servicePathsOnDate.forEach(s => {
+              if (!serviceContributions[s]) {
+                serviceContributions[s] = 0;
+              }
+              serviceContributions[s] += dayContribution;
+
+              if (!serviceComponents[s]) {
+                serviceComponents[s] = new Set<string>();
+              }
+              // Add components pointed for this service on this date
+              trackings.forEach(t => {
+                if (t.costStructureSelections?.includes(s)) {
+                  t.selections?.forEach(sel => serviceComponents[s].add(sel));
+                }
+              });
+            });
+          }
+        });
+
+        Object.entries(serviceContributions).forEach(([servicePath, daysWorked]) => {
+          const componentCount = serviceComponents[servicePath]?.size || 0;
+          const productivity = daysWorked > 0 ? componentCount / daysWorked : 0;
 
           items.push({
             contractItemId: contractItem.id,
-            measuredQuantity: daysWorked,
+            measuredQuantity: parseFloat(daysWorked.toFixed(4)), // Avoid floating point precision issues
             servicePath,
             productivity
           });
@@ -563,14 +735,53 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
     });
     const imgData = canvas.toDataURL('image/png');
     const pdf = new jsPDF('l', 'mm', 'a4');
+    
+    const margin = 10; // 1.0 cm = 10mm margin
     const pdfWidth = pdf.internal.pageSize.getWidth();
-    const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-    pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+    const pdfHeight = pdf.internal.pageSize.getHeight();
+    
+    const printableWidth = pdfWidth - (2 * margin);
+    const printableHeight = pdfHeight - (2 * margin);
+    
+    const imgWidth = printableWidth;
+    const imgHeight = (canvas.height * imgWidth) / canvas.width;
+    
+    let heightLeft = imgHeight;
+    let position = margin;
+
+    const drawMarginMasks = () => {
+      pdf.setFillColor(255, 255, 255);
+      // Top mask
+      pdf.rect(0, 0, pdfWidth, margin, 'F');
+      // Bottom mask (ensuring 1.0 cm bottom margin is respected)
+      pdf.rect(0, pdfHeight - margin, pdfWidth, margin, 'F');
+      // Left mask
+      pdf.rect(0, 0, margin, pdfHeight, 'F');
+      // Right mask
+      pdf.rect(pdfWidth - margin, 0, margin, pdfHeight, 'F');
+    };
+
+    // Add first page
+    pdf.addImage(imgData, 'PNG', margin, position, imgWidth, imgHeight);
+    drawMarginMasks();
+    heightLeft -= printableHeight;
+
+    // If there is more content, loop and add extra pages
+    while (heightLeft > 0) {
+      position = position - printableHeight;
+      pdf.addPage();
+      pdf.addImage(imgData, 'PNG', margin, position, imgWidth, imgHeight);
+      drawMarginMasks();
+      heightLeft -= printableHeight;
+    }
+
     pdf.save(`Medicao_${selectedContract?.number}-${selectedMeasurement?.measurementNumber.toString().padStart(2, '0')}.pdf`);
   };
 
   const generateXLSX = () => {
     if (!selectedContract || !selectedMeasurement) return;
+
+    const isPayroll = selectedContract.number.startsWith('FP-');
 
     const data = selectedMeasurement.items.map(mItem => {
       const item = selectedContract.items.find(i => i.id === mItem.contractItemId);
@@ -581,9 +792,17 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
       const accumTotal = accumPrev + measured;
       
       const valUnit = item.unitValue;
-      const valAccumPrev = accumPrev * valUnit;
-      const valMedido = measured * valUnit;
-      const valAccumTotal = accumTotal * valUnit;
+      const valAccumPrev = isPayroll
+        ? getAccumulatedValue(item.id, selectedMeasurement.measurementNumber, mItem.servicePath)
+        : accumPrev * valUnit;
+        
+      const valMedido = isPayroll
+        ? (measured * valUnit) + (mItem.extraValue || 0)
+        : measured * valUnit;
+        
+      const valAccumTotal = isPayroll
+        ? valMedido + valAccumPrev
+        : accumTotal * valUnit;
 
       const serviceName = (() => {
         const path = mItem.servicePath || item.servicePath;
@@ -597,39 +816,39 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
         return sv?.name || '-';
       })();
 
-      return {
+      const row: any = {
         'ITEM': item.itemNumber,
         'DESCRIÇÃO DO ITEM': item.description,
         'SERVIÇO': serviceName,
         'UN.': item.unit,
-        'QT. CONT.': item.quantity,
-        'QT. AC. ANT.': accumPrev,
-        'QT. MEDIDO': measured,
-        'PRODUTIVIDADE': mItem.productivity?.toFixed(2) || '0.00',
-        'QT. AC. ATUAL': accumTotal,
-        'V. UNIT.': valUnit,
-        'V. AC. ANT.': valAccumPrev,
-        'V. MEDIDO': valMedido,
-        'V. AC. TOTAL': valAccumTotal
       };
+
+      if (!isPayroll) {
+        row['QT. CONT.'] = item.quantity;
+      }
+      
+      row['QT. AC. ANT.'] = accumPrev;
+      row['QT. MEDIDO'] = measured;
+      row['PRODUTIVIDADE'] = mItem.productivity?.toFixed(2) || '0.00';
+      row['QT. AC. ATUAL'] = accumTotal;
+      row['V. UNIT.'] = valUnit;
+
+      if (isPayroll) {
+        row['EXTRAS'] = mItem.extraValue || 0;
+      }
+
+      row['V. AC. ANT.'] = valAccumPrev;
+      row['V. MEDIDO'] = valMedido;
+      row['V. AC. TOTAL'] = valAccumTotal;
+
+      return row;
     }).filter(Boolean) as any[];
 
-    const worksheet = XLSX.utils.json_to_sheet(data);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Medição");
-
-    // Add metadata info at the top (optional but good)
-    const info = [
-      ["CONTRATO:", selectedContract.number],
-      ["FORNECEDOR:", selectedContract.supplierName],
-      ["OBRA:", projects.find(p => p.id === selectedContract.projectId)?.name || ''],
-      ["MEDIÇÃO N°:", `${selectedContract.number}-${selectedMeasurement.measurementNumber.toString().padStart(2, '0')}`],
-      ["DATA:", new Date(selectedMeasurement.date).toLocaleDateString('pt-BR')],
-      [] // Empty row
-    ];
-    XLSX.utils.sheet_add_aoa(worksheet, info, { origin: "A1" });
-    
     // Shift the table data down to make room for info
+    const headers = isPayroll 
+      ? ["ITEM", "DESCRIÇÃO DO ITEM", "SERVIÇO", "UN.", "QT. AC. ANT.", "QT. MEDIDO", "PRODUTIVIDADE", "QT. AC. ATUAL", "V. UNIT.", "EXTRAS", "V. AC. ANT.", "V. MEDIDO", "V. AC. TOTAL"]
+      : ["ITEM", "DESCRIÇÃO DO ITEM", "SERVIÇO", "UN.", "QT. CONT.", "QT. AC. ANT.", "QT. MEDIDO", "PRODUTIVIDADE", "QT. AC. ATUAL", "V. UNIT.", "V. AC. ANT.", "V. MEDIDO", "V. AC. TOTAL"];
+
     const finalData: any[][] = [
       ["RELATÓRIO DE MEDIÇÃO"],
       ["CONTRATO:", selectedContract.number],
@@ -640,28 +859,39 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
       ["PERÍODO:", selectedMeasurement.startDate && selectedMeasurement.endDate ? `${new Date(selectedMeasurement.startDate).toLocaleDateString('pt-BR')} - ${new Date(selectedMeasurement.endDate).toLocaleDateString('pt-BR')}` : 'N/A'],
       ["VENCIMENTO:", selectedMeasurement.dueDate ? new Date(selectedMeasurement.dueDate).toLocaleDateString('pt-BR') : 'N/A'],
       [],
-      ["ITEM", "DESCRIÇÃO DO ITEM", "SERVIÇO", "UN.", "QT. CONT.", "QT. AC. ANT.", "QT. MEDIDO", "PRODUTIVIDADE", "QT. AC. ATUAL", "V. UNIT.", "V. AC. ANT.", "V. MEDIDO", "V. AC. TOTAL"]
+      headers
     ];
 
     data.forEach(row => {
-      finalData.push([
+      const rowArr = [
         row['ITEM'],
         row['DESCRIÇÃO DO ITEM'],
         row['SERVIÇO'],
         row['UN.'],
-        row['QT. CONT.'],
-        row['QT. AC. ANT.'],
-        row['QT. MEDIDO'],
-        row['PRODUTIVIDADE'],
-        row['QT. AC. ATUAL'],
-        row['V. UNIT.'],
-        row['V. AC. ANT.'],
-        row['V. MEDIDO'],
-        row['V. AC. TOTAL']
-      ]);
+      ];
+
+      if (!isPayroll) {
+        rowArr.push(row['QT. CONT.']);
+      }
+
+      rowArr.push(row['QT. AC. ANT.']);
+      rowArr.push(row['QT. MEDIDO']);
+      rowArr.push(row['PRODUTIVIDADE']);
+      rowArr.push(row['QT. AC. ATUAL']);
+      rowArr.push(row['V. UNIT.']);
+
+      if (isPayroll) {
+        rowArr.push(row['EXTRAS']);
+      }
+
+      rowArr.push(row['V. AC. ANT.']);
+      rowArr.push(row['V. MEDIDO']);
+      rowArr.push(row['V. AC. TOTAL']);
+
+      finalData.push(rowArr);
     });
 
-    if (selectedMeasurement.extraItems && selectedMeasurement.extraItems.length > 0) {
+    if (!isPayroll && selectedMeasurement.extraItems && selectedMeasurement.extraItems.length > 0) {
       finalData.push([]);
       finalData.push(["ITENS EXTRA CONTRATO"]);
       finalData.push(["DESCRIÇÃO", "TIPO", "CATEGORIA", "V. ACUM. ANT.", "V. MEDIDO", "V. ACUM. ATUAL"]);
@@ -673,6 +903,36 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
           item.prevAccumulated,
           item.measuredValue,
           item.currentAccumulated
+        ]);
+      });
+    }
+
+    // Stage Summary
+    finalData.push([]);
+    finalData.push(["RESUMO POR ETAPA"]);
+    finalData.push(["Etapa", "V. Medido (Atual)", "% Medição", "V. Acumulado Total"]);
+    stageSummary.forEach(s => {
+      finalData.push([
+        s.name,
+        s.current,
+        `${s.percentage.toFixed(2)}%`,
+        s.total
+      ]);
+    });
+
+    // Collaborator Summary (Only for Payroll)
+    if (isPayroll) {
+      finalData.push([]);
+      finalData.push(["RESUMO POR COLABORADOR"]);
+      finalData.push(["Colaborador", "CPF", "Chave Pix", "Dias Trabalhados", "V. Medido (Atual)", "V. Acumulado Total"]);
+      colabSummary.forEach(c => {
+        finalData.push([
+          c.name,
+          c.cpf,
+          c.pix,
+          c.days,
+          c.current,
+          c.total
         ]);
       });
     }
@@ -778,6 +1038,7 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                 {filteredContracts.map(c => (
                   <tr key={c.id} className="hover:bg-slate-50 transition-colors cursor-pointer" onClick={() => {
                     setSelectedContractId(c.id);
+                    setIsPayrollMode(c.number.startsWith('FP-'));
                     setView('contract-details');
                   }}>
                     <td className="px-6 py-4 font-bold text-slate-700">{c.number}</td>
@@ -793,6 +1054,7 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                           onClick={(e) => {
                             e.stopPropagation();
                             setSelectedContractId(c.id);
+                            setIsPayrollMode(c.number.startsWith('FP-'));
                             setView('contract-details');
                           }}
                           className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 hover:bg-indigo-100 flex items-center justify-center transition-all"
@@ -961,7 +1223,7 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                     <th className="px-3 py-2">Descrição</th>
                     {!isPayrollMode && <th className="px-3 py-2">Serviço (Estrutura de Custo)</th>}
                     <th className="px-3 py-2 w-20">Unid.</th>
-                    <th className="px-3 py-2 w-24">Quant.</th>
+                    {!isPayrollMode && <th className="px-3 py-2 w-24">Quant.</th>}
                     <th className="px-3 py-2 w-32">V. Unitário</th>
                     <th className="px-3 py-2 w-16"></th>
                   </tr>
@@ -1034,14 +1296,16 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                             placeholder="m2, un, etc"
                           />
                         </td>
-                        <td className="px-3 py-2">
-                          <input 
-                            type="number" 
-                            value={item.quantity}
-                            onChange={(e) => handleUpdateContractItem(item.id, 'quantity', parseFloat(e.target.value) || 0)}
-                            className="w-full px-2 py-1 bg-slate-50 border border-slate-200 rounded text-xs"
-                          />
-                        </td>
+                        {!isPayrollMode && (
+                          <td className="px-3 py-2">
+                            <input 
+                              type="number" 
+                              value={item.quantity}
+                              onChange={(e) => handleUpdateContractItem(item.id, 'quantity', parseFloat(e.target.value) || 0)}
+                              className="w-full px-2 py-1 bg-slate-50 border border-slate-200 rounded text-xs"
+                            />
+                          </td>
+                        )}
                         <td className="px-3 py-2">
                           <input 
                             type="number" 
@@ -1250,12 +1514,13 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                   <th className="px-2 py-3">Colaborador / Descrição</th>
                   <th className="px-2 py-3">Serviço</th>
                   <th className="px-2 py-3 w-12">Unid.</th>
-                  <th className="px-2 py-3 w-20 text-center">Quant. Contrato</th>
+                  {!selectedContract.number.startsWith('FP-') && <th className="px-2 py-3 w-20 text-center">Quant. Contrato</th>}
                   <th className="px-2 py-3 w-20 text-center">Quant. Acum. Ant.</th>
                   <th className="px-2 py-3 w-24 text-center bg-indigo-50 text-indigo-700">Quant. Medido</th>
                   <th className="px-2 py-3 w-20 text-center">Produtividade</th>
                   <th className="px-2 py-3 w-20 text-center">Quant. Acum. Atual</th>
                   <th className="px-2 py-3 w-24 text-center">V. Unitário</th>
+                  {selectedContract.number.startsWith('FP-') && <th className="px-2 py-3 w-24 text-center bg-teal-50 text-teal-700 font-sans">Extras</th>}
                   <th className="px-2 py-3 w-24 text-center">V. Acum. Ant.</th>
                   <th className="px-2 py-3 w-24 text-center">V. Medido</th>
                   <th className="px-2 py-3 w-24 text-center">V. Acum. Total</th>
@@ -1266,15 +1531,22 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                   const item = selectedContract.items.find(i => i.id === mItem.contractItemId);
                   if (!item) return null;
 
+                  const isPayroll = selectedContract.number.startsWith('FP-');
                   const nextNumber = (contractMeasurements.length > 0 ? Math.max(...contractMeasurements.map(m => m.measurementNumber)) : 0) + 1;
                   const accumPrev = getAccumulatedQuantity(item.id, nextNumber, mItem.servicePath);
                   const measured = mItem.measuredQuantity || 0;
                   const accumTotal = accumPrev + measured;
                   
                   const valUnit = item.unitValue;
-                  const valAccumPrev = accumPrev * valUnit;
-                  const valMedido = measured * valUnit;
-                  const valAccumTotal = accumTotal * valUnit;
+                  const valAccumPrev = isPayroll
+                    ? getAccumulatedValue(item.id, nextNumber, mItem.servicePath)
+                    : accumPrev * valUnit;
+                  const valMedido = isPayroll
+                    ? (measured * valUnit) + (mItem.extraValue || 0)
+                    : measured * valUnit;
+                  const valAccumTotal = isPayroll
+                    ? valMedido + valAccumPrev
+                    : accumTotal * valUnit;
 
                   const serviceName = (() => {
                     const path = mItem.servicePath || item.servicePath;
@@ -1337,12 +1609,13 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                         </div>
                       </td>
                       <td className="px-2 py-3 text-center">{item.unit}</td>
-                      <td className="px-2 py-3 text-center font-bold">{item.quantity}</td>
+                      {!selectedContract.number.startsWith('FP-') && <td className="px-2 py-3 text-center font-bold">{item.quantity}</td>}
                       <td className="px-2 py-3 text-center text-slate-400">{accumPrev}</td>
                       <td className="px-2 py-3 bg-indigo-50/30 font-sans">
                         <input 
                           type="number" 
                           value={measured}
+                          step="any"
                           onChange={(e) => {
                             const val = parseFloat(e.target.value) || 0;
                             setNewMeasurementItems(prev => prev.map((mi, i) => i === idx ? { ...mi, measuredQuantity: val } : mi));
@@ -1368,7 +1641,25 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                       </td>
                       <td className="px-2 py-3 text-center font-bold text-slate-700">{accumTotal}</td>
                       <td className="px-2 py-3 text-center">R$ {valUnit.toLocaleString()}</td>
-                      <td className="px-2 py-3 text-center text-slate-400">R$ {valAccumPrev.toLocaleString()}</td>
+                      {selectedContract.number.startsWith('FP-') && (
+                        <td className="px-2 py-3 bg-teal-50/20 font-sans">
+                          <div className="relative font-sans">
+                            <span className="absolute left-1.5 top-1/2 -translate-y-1/2 text-[9px] text-teal-500 font-bold font-sans">R$</span>
+                            <input 
+                              type="number" 
+                              step="0.01"
+                              value={mItem.extraValue !== undefined ? mItem.extraValue : ''}
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value) || 0;
+                                setNewMeasurementItems(prev => prev.map((mi, i) => i === idx ? { ...mi, extraValue: val } : mi));
+                              }}
+                              className="w-full pl-5 pr-1 py-1 bg-white border border-teal-200 rounded text-center font-bold text-teal-700 outline-none focus:ring-2 focus:ring-indigo-500 font-sans text-[10px]"
+                              placeholder="0,00"
+                            />
+                          </div>
+                        </td>
+                      )}
+                      <td className="px-2 py-3 text-center text-slate-400 font-sans">R$ {valAccumPrev.toLocaleString()}</td>
                       <td className="px-2 py-3 text-center font-bold text-emerald-600 font-sans">R$ {valMedido.toLocaleString()}</td>
                       <td className="px-2 py-3 text-center font-bold text-slate-800 font-sans">R$ {valAccumTotal.toLocaleString()}</td>
                     </tr>
@@ -1379,7 +1670,8 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
           </div>
 
           {/* Itens extra contrato */}
-          <div className="space-y-4 border-t border-slate-100 pt-6">
+          {!selectedContract.number.startsWith('FP-') && (
+            <div className="space-y-4 border-t border-slate-100 pt-6">
             <div className="flex justify-between items-center">
               <h4 className="text-base font-bold text-slate-800 italic">Itens extra contrato</h4>
               <button 
@@ -1504,51 +1796,57 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                 </tbody>
               </table>
             </div>
+          </div>
+          )}
 
-            {/* Subtotal & Totais Visual Indicator for New Measurement */}
-            {newExtraContractItems.length > 0 && (
-              <div className="flex justify-end pt-2">
-                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 w-80 space-y-2 text-xs">
-                  <div className="flex justify-between text-slate-500">
-                    <span>Subtotal Contrato:</span>
-                    <span className="font-semibold">
-                      R$ {newMeasurementItems.reduce((acc, mi) => {
-                        const item = selectedContract.items.find(i => i.id === mi.contractItemId);
-                        return acc + ((mi.measuredQuantity || 0) * (item?.unitValue || 0));
-                      }, 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-emerald-600">
-                    <span>Acréscimos Extra:</span>
-                    <span className="font-semibold">
-                      + R$ {newExtraContractItems.filter(e => e.type === 'acréscimo').reduce((acc, e) => acc + (e.measuredValue || 0), 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-rose-600">
-                    <span>Descontos Extra:</span>
-                    <span className="font-semibold">
-                      - R$ {newExtraContractItems.filter(e => e.type === 'desconto').reduce((acc, e) => acc + (e.measuredValue || 0), 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </span>
-                  </div>
-                  <div className="w-full h-px bg-slate-200 my-1"></div>
-                  <div className="flex justify-between text-sm font-bold text-slate-800">
-                    <span>Total da Medição:</span>
-                    <span>
-                      R$ {(() => {
-                        const baseTotal = newMeasurementItems.reduce((acc, mi) => {
+          {/* Subtotal & Totais Visual Indicator for New Measurement */}
+          {(newExtraContractItems.length > 0 || selectedContract.number.startsWith('FP-')) && (
+            <div className="flex justify-end pt-2">
+              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 w-80 space-y-2 text-xs">
+                {!selectedContract.number.startsWith('FP-') && (
+                  <>
+                    <div className="flex justify-between text-slate-500 font-sans">
+                      <span>Subtotal Contrato:</span>
+                      <span className="font-semibold font-sans">
+                        R$ {newMeasurementItems.reduce((acc, mi) => {
                           const item = selectedContract.items.find(i => i.id === mi.contractItemId);
                           return acc + ((mi.measuredQuantity || 0) * (item?.unitValue || 0));
-                        }, 0);
-                        const additions = newExtraContractItems.filter(e => e.type === 'acréscimo').reduce((acc, e) => acc + (e.measuredValue || 0), 0);
-                        const deductions = newExtraContractItems.filter(e => e.type === 'desconto').reduce((acc, e) => acc + (e.measuredValue || 0), 0);
-                        return (baseTotal + additions - deductions);
-                      })().toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </span>
-                  </div>
+                        }, 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-emerald-600 font-sans">
+                      <span>Acréscimos Extra:</span>
+                      <span className="font-semibold font-sans">
+                        + R$ {newExtraContractItems.filter(e => e.type === 'acréscimo').reduce((acc, e) => acc + (e.measuredValue || 0), 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-rose-600 font-sans">
+                      <span>Descontos Extra:</span>
+                      <span className="font-semibold font-sans">
+                        - R$ {newExtraContractItems.filter(e => e.type === 'desconto').reduce((acc, e) => acc + (e.measuredValue || 0), 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                    <div className="w-full h-px bg-slate-200 my-1"></div>
+                  </>
+                )}
+                <div className="flex justify-between text-sm font-bold text-slate-800 font-sans">
+                  <span>Total da Medição:</span>
+                  <span className="font-sans">
+                    R$ {(() => {
+                      const isPayroll = selectedContract.number.startsWith('FP-');
+                      const baseTotal = newMeasurementItems.reduce((acc, mi) => {
+                        const item = selectedContract.items.find(i => i.id === mi.contractItemId);
+                        return acc + ((mi.measuredQuantity || 0) * (item?.unitValue || 0)) + (isPayroll ? (mi.extraValue || 0) : 0);
+                      }, 0);
+                      const additions = isPayroll ? 0 : newExtraContractItems.filter(e => e.type === 'acréscimo').reduce((acc, e) => acc + (e.measuredValue || 0), 0);
+                      const deductions = isPayroll ? 0 : newExtraContractItems.filter(e => e.type === 'desconto').reduce((acc, e) => acc + (e.measuredValue || 0), 0);
+                      return (baseTotal + additions - deductions);
+                    })().toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
                 </div>
               </div>
-            )}
-          </div>
+            </div>
+          )}
 
           {/* Dynamic Stage Summary table for active measurement editing */}
           <div className="space-y-4 border-t border-slate-100 pt-6">
@@ -1570,18 +1868,22 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                     let totalCurrentValue = 0;
 
                     // 1. Core items
+                    const isPayroll = selectedContract.number.startsWith('FP-');
                     newMeasurementItems.forEach(mi => {
                       const item = selectedContract.items.find(i => i.id === mi.contractItemId);
                       if (!item) return;
-                      const measuredValue = (mi.measuredQuantity || 0) * item.unitValue;
-                      const accumPrev = getAccumulatedQuantity(item.id, currentMeasurementNumber);
-                      const totalValue = (accumPrev + (mi.measuredQuantity || 0)) * item.unitValue;
+                      const measuredValue = (mi.measuredQuantity || 0) * item.unitValue + (isPayroll ? (mi.extraValue || 0) : 0);
+                      const accumPrevVal = isPayroll
+                        ? getAccumulatedValue(item.id, currentMeasurementNumber, mi.servicePath)
+                        : getAccumulatedQuantity(item.id, currentMeasurementNumber) * item.unitValue;
+                      const totalValue = accumPrevVal + measuredValue;
                       
                       totalCurrentValue += measuredValue;
 
                       let stageName = 'Outros';
-                      if (item.servicePath) {
-                        const [ccId, stId] = item.servicePath.split('|');
+                      const svcPath = mi.servicePath || item.servicePath;
+                      if (svcPath) {
+                        const [ccId, stId] = svcPath.split('|');
                         const project = projects.find(p => p.id === selectedContract.projectId);
                         const cc = project?.costStructure?.find(c => c.id === ccId);
                         const st = cc?.stages.find(s => s.id === stId);
@@ -1595,29 +1897,31 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                       editStageSummary[stageName].total += totalValue;
                     });
 
-                    // 2. Extra items from current edit state
-                    newExtraContractItems.forEach(eItem => {
-                      const signedValue = eItem.type === 'desconto' ? -eItem.measuredValue : eItem.measuredValue;
-                      const prevAccum = getExtraItemAccumulatedValue(eItem.description, eItem.type, eItem.category, currentMeasurementNumber);
-                      const totalValue = prevAccum + signedValue;
+                    // 2. Extra items from current edit state (only if NOT payroll mode)
+                    if (!isPayroll) {
+                      newExtraContractItems.forEach(eItem => {
+                        const signedValue = eItem.type === 'desconto' ? -eItem.measuredValue : eItem.measuredValue;
+                        const prevAccum = getExtraItemAccumulatedValue(eItem.description, eItem.type, eItem.category, currentMeasurementNumber);
+                        const totalValue = prevAccum + signedValue;
 
-                      totalCurrentValue += signedValue;
+                        totalCurrentValue += signedValue;
 
-                      let stageName = 'Outros';
-                      if (eItem.stagePath) {
-                        const [ccId, stId] = eItem.stagePath.split('|');
-                        const project = projects.find(p => p.id === selectedContract.projectId);
-                        const cc = project?.costStructure?.find(c => c.id === ccId);
-                        const st = cc?.stages.find(s => s.id === stId);
-                        if (st) stageName = st.name;
-                      }
+                        let stageName = 'Outros';
+                        if (eItem.stagePath) {
+                          const [ccId, stId] = eItem.stagePath.split('|');
+                          const project = projects.find(p => p.id === selectedContract.projectId);
+                          const cc = project?.costStructure?.find(c => c.id === ccId);
+                          const st = cc?.stages.find(s => s.id === stId);
+                          if (st) stageName = st.name;
+                        }
 
-                      if (!editStageSummary[stageName]) {
-                        editStageSummary[stageName] = { name: stageName, current: 0, total: 0 };
-                      }
-                      editStageSummary[stageName].current += signedValue;
-                      editStageSummary[stageName].total += totalValue;
-                    });
+                        if (!editStageSummary[stageName]) {
+                          editStageSummary[stageName] = { name: stageName, current: 0, total: 0 };
+                        }
+                        editStageSummary[stageName].current += signedValue;
+                        editStageSummary[stageName].total += totalValue;
+                      });
+                    }
 
                     const list = Object.values(editStageSummary).map(s => ({
                       ...s,
@@ -1653,6 +1957,88 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
               </table>
             </div>
           </div>
+
+          {/* Dynamic Collaborator Summary table for active measurement editing (Only for Payroll) */}
+          {selectedContract.number.startsWith('FP-') && (
+            <div className="space-y-4 border-t border-slate-100 pt-6">
+              <h4 className="text-base font-bold text-slate-800 italic">Resumo por Colaborador (Medição Atual e Acumulado)</h4>
+              <div className="overflow-x-auto max-w-full">
+                <table className="w-full text-left border-collapse min-w-[600px] border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase">
+                      <th className="px-4 py-3 font-sans">Colaborador</th>
+                      <th className="px-4 py-3 text-center font-sans">Dias Trabalhados</th>
+                      <th className="px-4 py-3 text-right font-sans">Valor nesta Medição</th>
+                      <th className="px-4 py-3 text-right font-sans">Valor Acumulado Total (Inc. Anteriores)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 bg-white">
+                    {(() => {
+                      const editColabSummary: { [colabName: string]: { name: string, cpf: string, pix: string, days: number, current: number, total: number } } = {};
+                      
+                      newMeasurementItems.forEach(mi => {
+                        const item = selectedContract.items.find(i => i.id === mi.contractItemId);
+                        if (!item) return;
+                        
+                        const colabName = item.description;
+                        const measuredQty = mi.measuredQuantity || 0;
+                        const valUnit = item.unitValue;
+                        const measuredValue = (measuredQty * valUnit) + (mi.extraValue || 0);
+
+                        const accumPrevVal = getAccumulatedValue(item.id, currentMeasurementNumber, mi.servicePath);
+                        const totalValue = accumPrevVal + measuredValue;
+
+                        if (!editColabSummary[colabName]) {
+                          const emp = employees.find(e => e.name === colabName);
+                          editColabSummary[colabName] = { 
+                            name: colabName, 
+                            cpf: emp?.cpf || 'N/A', 
+                            pix: emp?.pixKey || 'N/A', 
+                            days: 0, 
+                            current: 0, 
+                            total: 0 
+                          };
+                        }
+                        editColabSummary[colabName].days += measuredQty;
+                        editColabSummary[colabName].current += measuredValue;
+                        editColabSummary[colabName].total += totalValue;
+                      });
+
+                      const list = Object.values(editColabSummary).sort((a, b) => b.current - a.current);
+
+                      if (list.length === 0) {
+                        return (
+                          <tr>
+                            <td colSpan={4} className="px-4 py-8 text-center text-slate-400 text-xs italic font-sans">
+                              Nenhum colaborador medido nesta medição.
+                            </td>
+                          </tr>
+                        );
+                      }
+
+                      return list.map((c, idx) => (
+                        <tr key={idx} className="text-[11px] hover:bg-slate-50/50 transition-colors font-sans w-full">
+                          <td className="px-4 py-2.5 font-sans">
+                            <span className="font-bold text-slate-700">{c.name}</span>
+                            <span className="text-slate-500 font-normal ml-2">
+                              (CPF: {c.cpf} | Pix: {c.pix})
+                            </span>
+                          </td>
+                          <td className="px-4 py-2.5 text-center font-semibold text-slate-600 font-sans">{c.days}</td>
+                          <td className="px-4 py-2.5 text-right font-semibold text-teal-600 font-sans">
+                            R$ {c.current.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                          <td className="px-4 py-2.5 text-right font-bold text-slate-800 font-sans">
+                            R$ {c.total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                        </tr>
+                      ));
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-bold text-slate-700 mb-2 italic">Observações</label>
@@ -1698,63 +2084,44 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
           <div className="bg-white p-8 rounded-3xl shadow-2xl border border-slate-200 overflow-x-auto">
             <div ref={printRef} className="bg-white w-[297mm] min-h-[210mm] p-[10mm] mx-auto text-black font-sans" style={{ fontSize: '8px' }}>
               {/* Header */}
-              <div className="border border-black flex h-16">
-                <div className="w-1/4 border-r border-black flex items-center justify-center p-2">
-                  <div className="relative flex items-center justify-center">
-                    <img 
-                      src="https://images.weserv.nl/?url=https://hmtower.com.br/wp-content/uploads/2021/07/logo-hmtower.png" 
-                      alt="HM TOWER" 
-                      width="150"
-                      height="50"
-                      className="h-12 object-contain relative z-10"
-                      crossOrigin="anonymous"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).style.display = 'none';
-                        const fallback = (e.target as HTMLImageElement).nextElementSibling as HTMLElement;
-                        if (fallback) fallback.style.display = 'flex';
-                      }}
-                    />
-                    <div className="hidden absolute inset-0 flex-col items-center justify-center" style={{ display: 'none' }}>
-                      <div className="w-6 h-6 bg-indigo-600 rounded flex items-center justify-center text-white text-[8px] font-bold">HM</div>
-                      <span className="font-bold text-[10px]">HMTOWER</span>
-                    </div>
+              <div className="border border-black flex h-16 w-full">
+                <div className="border-r border-black flex items-center justify-center p-2 shrink-0" style={{ width: '23.333%' }}>
+                  <svg width="120" height="50" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg" className="h-12 object-contain">
+                    <circle cx="100" cy="80" r="60" fill="#4A4A4A"/>
+                    <path d="M85 45L85 115L100 115L100 35L85 45Z" fill="#78B833"/>
+                    <path d="M105 55L105 115L120 115L120 65L105 55Z" fill="#A0A0A0"/>
+                    <path d="M70 70L70 115L80 115L80 75L70 70Z" fill="#5E8E26"/>
+                    <text x="100" y="160" fontFamily="Arial, sans-serif" fontWeight="bold" fontSize="24" fill="#4A4A4A" textAnchor="middle">HM TOWER</text>
+                    <text x="100" y="182" fontFamily="Arial, sans-serif" fontSize="8" fill="#4A4A4A" textAnchor="middle">ENGENHARIA</text>
+                  </svg>
+                </div>
+                <div className="border-r border-black flex flex-col items-center justify-center font-bold text-[11px] shrink-0 text-center leading-tight gap-1" style={{ width: isPayrollActive ? '50.000%' : '47.778%' }}>
+                  <div>HM TOWER ENGENHARIA E CONSTRUÇÕES</div>
+                  <div className="text-[11px] font-bold text-black uppercase tracking-wide border-t border-black pt-1 w-full text-center">
+                    {selectedContract.number.startsWith('FP-') ? 'FOLHA DE PAGAMENTO' : 'MEDIÇÃO DE CONTRATO'}
                   </div>
                 </div>
-                <div className="w-1/2 border-r border-black flex flex-col items-center justify-center font-bold text-[11px]">
-                  HM TOWER ENGENHARIA E CONSTRUÇÕES
-                </div>
-                <div className="w-1/4 flex flex-col items-center justify-center font-bold text-[12px]">
-                  MEDIÇÃO DE CONTRATO
-                </div>
-              </div>
-
-              {/* Metadata */}
-              <div className="border-x border-b border-black flex h-12">
-                <div className="w-1/4 border-r border-black p-1">
-                  <div className="font-bold text-[7px] uppercase">CONTRATO:</div>
-                  <div className="text-[9px] font-bold">{selectedContract.number}</div>
-                </div>
-                <div className="w-1/4 border-r border-black p-1">
-                  <div className="font-bold text-[7px] uppercase">FORNECEDOR:</div>
-                  <div className="text-[9px] truncate">{selectedContract.supplierName}</div>
-                </div>
-                <div className="w-1/4 border-r border-black p-1">
-                  <div className="font-bold text-[7px] uppercase">OBRA:</div>
-                  <div className="text-[9px] truncate">{projects.find(p => p.id === selectedContract.projectId)?.name}</div>
-                </div>
-                <div className="w-1/4 p-1 flex flex-col justify-between">
-                  <div className="flex justify-between">
-                    <span className="font-bold text-[7px] uppercase">MEDIÇÃO N°:</span>
-                    <span className="font-bold">{selectedContract.number}-{selectedMeasurement.measurementNumber.toString().padStart(2, '0')}</span>
+                <div className="flex flex-col justify-center font-sans shrink-0 px-3 gap-0.5" style={{ width: isPayrollActive ? '26.667%' : '28.889%' }}>
+                  <div className="flex justify-between items-center gap-2">
+                     <span className="font-bold text-[7px] uppercase whitespace-nowrap">OBRA:</span>
+                     <span className="font-bold text-[8px] text-slate-900 truncate" title={projects.find(p => p.id === selectedContract.projectId)?.name || ''}>
+                       {projects.find(p => p.id === selectedContract.projectId)?.name || ''}
+                     </span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="font-bold text-[7px] uppercase">DATA:</span>
-                    <span>{new Date(selectedMeasurement.date).toLocaleDateString('pt-BR')}</span>
+                  <div className="flex justify-between items-center">
+                     <span className="font-bold text-[7px] uppercase">MEDIÇÃO N°:</span>
+                     <span className="font-bold text-[9px] text-slate-900">{selectedContract.number}-{selectedMeasurement.measurementNumber.toString().padStart(2, '0')}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                     <span className="font-bold text-[7px] uppercase">DATA:</span>
+                     <span className="font-normal text-[8px] text-slate-800">{new Date(selectedMeasurement.date).toLocaleDateString('pt-BR')}</span>
                   </div>
                   {selectedMeasurement.startDate && selectedMeasurement.endDate && (
-                    <div className="flex justify-between">
+                    <div className="flex justify-between items-center">
                       <span className="font-bold text-[7px] uppercase">PERÍODO:</span>
-                      <span className="text-[7px]">{new Date(selectedMeasurement.startDate).toLocaleDateString('pt-BR')} - {new Date(selectedMeasurement.endDate).toLocaleDateString('pt-BR')}</span>
+                      <span className="font-normal text-[8px] text-slate-800">
+                        {new Date(selectedMeasurement.startDate).toLocaleDateString('pt-BR')} - {new Date(selectedMeasurement.endDate).toLocaleDateString('pt-BR')}
+                      </span>
                     </div>
                   )}
                 </div>
@@ -1764,19 +2131,20 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
               <table className="w-full border-collapse border-x border-black">
                 <thead>
                   <tr className="bg-slate-100 border-b border-black text-[6px] font-bold uppercase">
-                    <th className="border-r border-black px-1 py-1 w-[30px] text-center">ITEM</th>
-                    <th className="border-r border-black px-1 py-1 w-[180px] text-left">DESCRIÇÃO DO ITEM</th>
-                    <th className="border-r border-black px-1 py-1 w-[180px] text-center">SERVIÇO</th>
-                    <th className="border-r border-black px-1 py-1 w-[25px] text-center">UN.</th>
-                    <th className="border-r border-black px-1 py-1 w-[45px] text-center">QT. CONT.</th>
-                    <th className="border-r border-black px-1 py-1 w-[45px] text-center">QT. AC. ANT.</th>
-                    <th className="border-r border-black px-1 py-1 w-[45px] text-center">QT. MEDIDO</th>
-                    <th className="border-r border-black px-1 py-1 w-[45px] text-center">PROD.</th>
-                    <th className="border-r border-black px-1 py-1 w-[45px] text-center">QT. AC. ATUAL</th>
-                    <th className="border-r border-black px-1 py-1 w-[65px] text-center">V. UNIT.</th>
-                    <th className="border-r border-black px-1 py-1 w-[65px] text-center">V. AC. ANT.</th>
-                    <th className="border-r border-black px-1 py-1 w-[65px] text-center">V. MEDIDO</th>
-                    <th className="px-1 py-1 w-[65px] text-center">V. AC. TOTAL</th>
+                    <th className="border-r border-black px-1 py-1 text-center" style={{ width: colWidths.item }}>ITEM</th>
+                    <th className="border-r border-black px-1 py-1 text-left" style={{ width: colWidths.description }}>DESCRIÇÃO DO ITEM</th>
+                    <th className="border-r border-black px-1 py-1 text-center" style={{ width: colWidths.servicio }}>SERVIÇO</th>
+                    <th className="border-r border-black px-1 py-1 text-center" style={{ width: colWidths.un }}>UN.</th>
+                    {!selectedContract.number.startsWith('FP-') && <th className="border-r border-black px-1 py-1 text-center" style={{ width: colWidths.qt0 }}>QT. CONT.</th>}
+                    <th className="border-r border-black px-1 py-1 text-center" style={{ width: colWidths.qt1 }}>QT. AC. ANT.</th>
+                    <th className="border-r border-black px-1 py-1 text-center" style={{ width: colWidths.qt2 }}>QT. MEDIDO</th>
+                    <th className="border-r border-black px-1 py-1 text-center" style={{ width: colWidths.prod }}>PROD.</th>
+                    <th className="border-r border-black px-1 py-1 text-center" style={{ width: colWidths.qt3 }}>QT. AC. ATUAL</th>
+                    <th className="border-r border-black px-1 py-1 text-center" style={{ width: colWidths.vunit }}>V. UNIT.</th>
+                    {selectedContract.number.startsWith('FP-') && <th className="border-r border-black px-1 py-1 text-center" style={{ width: colWidths.extras }}>EXTRAS</th>}
+                    <th className="border-r border-black px-1 py-1 text-center" style={{ width: colWidths.vacPrev }}>V. AC. ANT.</th>
+                    <th className="border-r border-black px-1 py-1 text-center" style={{ width: colWidths.vmed }}>V. MEDIDO</th>
+                    <th className="px-1 py-1 text-center" style={{ width: colWidths.vacTotal }}>V. AC. TOTAL</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1784,14 +2152,23 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                     const item = selectedContract.items.find(i => i.id === mItem.contractItemId);
                     if (!item) return null;
 
+                    const isPayroll = selectedContract.number.startsWith('FP-');
                     const measured = mItem.measuredQuantity || 0;
                     const accumPrev = getAccumulatedQuantity(item.id, selectedMeasurement.measurementNumber, mItem.servicePath);
                     const accumTotal = accumPrev + measured;
                     
                     const valUnit = item.unitValue;
-                    const valAccumPrev = accumPrev * valUnit;
-                    const valMedido = measured * valUnit;
-                    const valAccumTotal = accumTotal * valUnit;
+                    const valAccumPrev = isPayroll
+                      ? getAccumulatedValue(item.id, selectedMeasurement.measurementNumber, mItem.servicePath)
+                      : accumPrev * valUnit;
+                      
+                    const valMedido = isPayroll
+                      ? (measured * valUnit) + (mItem.extraValue || 0)
+                      : measured * valUnit;
+                      
+                    const valAccumTotal = isPayroll
+                      ? valMedido + valAccumPrev
+                      : accumTotal * valUnit;
 
                     const serviceName = (() => {
                       const path = mItem.servicePath || item.servicePath;
@@ -1807,66 +2184,75 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
 
                     return (
                       <tr key={`${mItem.contractItemId}-${idx}`} className="border-b border-black">
-                        <td className="border-r border-black text-center px-1 py-1 w-[30px]">{item.itemNumber}</td>
-                        <td className="border-r border-black px-1 py-1 w-[180px] break-words whitespace-normal leading-tight">{item.description}</td>
-                        <td className="border-r border-black text-center px-1 py-1 text-[6px] break-words whitespace-normal leading-tight w-[180px]">{serviceName}</td>
-                        <td className="border-r border-black text-center py-1 w-[25px]">{item.unit}</td>
-                        <td className="border-r border-black text-center py-1 font-bold w-[45px]">{item.quantity}</td>
-                        <td className="border-r border-black text-center py-1 w-[45px]">{accumPrev}</td>
-                        <td className="border-r border-black text-center py-1 font-bold w-[45px]">{measured}</td>
-                        <td className="border-r border-black text-center py-1 w-[45px]">{mItem.productivity?.toFixed(2) || '0.00'}</td>
-                        <td className="border-r border-black text-center py-1 font-bold w-[45px]">{accumTotal}</td>
-                        <td className="border-r border-black text-center py-1 w-[65px]">R$ {valUnit.toLocaleString()}</td>
-                        <td className="border-r border-black text-center py-1 w-[65px]">R$ {valAccumPrev.toLocaleString()}</td>
-                        <td className="border-r border-black text-center py-1 font-bold w-[65px]">R$ {valMedido.toLocaleString()}</td>
-                        <td className="text-center py-1 font-bold w-[65px]">R$ {valAccumTotal.toLocaleString()}</td>
+                        <td className="border-r border-black text-center px-1 py-1" style={{ width: colWidths.item }}>{item.itemNumber}</td>
+                        <td className="border-r border-black px-1 py-1 break-words whitespace-normal leading-tight" style={{ width: colWidths.description }}>{item.description}</td>
+                        <td className="border-r border-black text-center px-1 py-1 text-[6px] break-words whitespace-normal leading-tight" style={{ width: colWidths.servicio }}>{serviceName}</td>
+                        <td className="border-r border-black text-center py-1" style={{ width: colWidths.un }}>{item.unit}</td>
+                        {!isPayroll && <td className="border-r border-black text-center py-1 font-bold" style={{ width: colWidths.qt0 }}>{item.quantity}</td>}
+                        <td className="border-r border-black text-center py-1" style={{ width: colWidths.qt1 }}>{accumPrev}</td>
+                        <td className="border-r border-black text-center py-1 font-bold" style={{ width: colWidths.qt2 }}>{measured}</td>
+                        <td className="border-r border-black text-center py-1" style={{ width: colWidths.prod }}>{mItem.productivity?.toFixed(2) || '0.00'}</td>
+                        <td className="border-r border-black text-center py-1 font-bold" style={{ width: colWidths.qt3 }}>{accumTotal}</td>
+                        <td className="border-r border-black text-center py-1" style={{ width: colWidths.vunit }}>R$ {valUnit.toLocaleString()}</td>
+                        {isPayroll && (
+                          <td className="border-r border-black text-center py-1 font-bold text-teal-600" style={{ width: colWidths.extras }}>
+                            R$ {(mItem.extraValue || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                        )}
+                        <td className="border-r border-black text-center py-1" style={{ width: colWidths.vacPrev }}>R$ {valAccumPrev.toLocaleString()}</td>
+                        <td className="border-r border-black text-center py-1 font-bold" style={{ width: colWidths.vmed }}>R$ {valMedido.toLocaleString()}</td>
+                        <td className="text-center py-1 font-bold" style={{ width: colWidths.vacTotal }}>R$ {valAccumTotal.toLocaleString()}</td>
                       </tr>
                     );
                   })}
-                  {Array.from({ length: Math.max(0, 15 - selectedMeasurement.items.length) }).map((_, i) => (
-                    <tr key={`empty-${i}`} className="border-b border-black h-5">
-                      <td className="border-r border-black w-[30px]"></td>
-                      <td className="border-r border-black w-[180px]"></td>
-                      <td className="border-r border-black w-[180px]"></td>
-                      <td className="border-r border-black w-[25px]"></td>
-                      <td className="border-r border-black w-[45px]"></td>
-                      <td className="border-r border-black w-[45px]"></td>
-                      <td className="border-r border-black w-[45px]"></td>
-                      <td className="border-r border-black w-[45px]"></td>
-                      <td className="border-r border-black w-[45px]"></td>
-                      <td className="border-r border-black w-[65px]"></td>
-                      <td className="border-r border-black w-[65px]"></td>
-                      <td className="border-r border-black w-[65px]"></td>
-                      <td className="w-[65px]"></td>
-                    </tr>
-                  ))}
+                  {(() => {
+                    const isPayroll = selectedContract.number.startsWith('FP-');
+                    return Array.from({ length: Math.max(0, 15 - selectedMeasurement.items.length) }).map((_, i) => (
+                      <tr key={`empty-${i}`} className="border-b border-black h-5">
+                        <td className="border-r border-black" style={{ width: colWidths.item }}></td>
+                        <td className="border-r border-black" style={{ width: colWidths.description }}></td>
+                        <td className="border-r border-black" style={{ width: colWidths.servicio }}></td>
+                        <td className="border-r border-black" style={{ width: colWidths.un }}></td>
+                        {!isPayroll && <td className="border-r border-black" style={{ width: colWidths.qt0 }}></td>}
+                        <td className="border-r border-black" style={{ width: colWidths.qt1 }}></td>
+                        <td className="border-r border-black" style={{ width: colWidths.qt2 }}></td>
+                        <td className="border-r border-black" style={{ width: colWidths.prod }}></td>
+                        <td className="border-r border-black" style={{ width: colWidths.qt3 }}></td>
+                        <td className="border-r border-black" style={{ width: colWidths.vunit }}></td>
+                        {isPayroll && <td className="border-r border-black" style={{ width: colWidths.extras }}></td>}
+                        <td className="border-r border-black" style={{ width: colWidths.vacPrev }}></td>
+                        <td className="border-r border-black" style={{ width: colWidths.vmed }}></td>
+                        <td style={{ width: colWidths.vacTotal }}></td>
+                      </tr>
+                    ));
+                  })()}
                 </tbody>
               </table>
 
               {/* Printable Itens Extra Contrato */}
-              {selectedMeasurement.extraItems && selectedMeasurement.extraItems.length > 0 && (
+              {!selectedContract.number.startsWith('FP-') && selectedMeasurement.extraItems && selectedMeasurement.extraItems.length > 0 && (
                 <div className="mt-4 border border-black">
                   <div className="bg-slate-100 border-b border-black px-2 py-1 font-bold text-[7px] uppercase font-sans">Itens Extra Contrato</div>
                   <table className="w-full text-[6px]">
                     <thead>
                       <tr className="border-b border-black font-bold uppercase">
-                        <th className="border-r border-black px-2 py-1 text-left">DESCRIÇÃO</th>
-                        <th className="border-r border-black px-2 py-1 text-center w-24">TIPO</th>
-                        <th className="border-r border-black px-2 py-1 text-center w-32">CATEGORIA</th>
-                        <th className="border-r border-black px-2 py-1 text-right w-24">V. ACUM. ANT.</th>
-                        <th className="border-r border-black px-2 py-1 text-right w-24">V. MEDIDO</th>
-                        <th className="px-2 py-1 text-right w-24">V. ACUM. ATUAL</th>
+                        <th className="border-r border-black px-2 py-1 text-left" style={{ width: extraColWidths.description }}>DESCRIÇÃO</th>
+                        <th className="border-r border-black px-2 py-1 text-center" style={{ width: extraColWidths.type }}>TIPO</th>
+                        <th className="border-r border-black px-2 py-1 text-center" style={{ width: extraColWidths.category }}>CATEGORIA</th>
+                        <th className="border-r border-black px-2 py-1 text-right" style={{ width: extraColWidths.prev }}>V. ACUM. ANT.</th>
+                        <th className="border-r border-black px-2 py-1 text-right" style={{ width: extraColWidths.med }}>V. MEDIDO</th>
+                        <th className="px-2 py-1 text-right" style={{ width: extraColWidths.total }}>V. ACUM. ATUAL</th>
                       </tr>
                     </thead>
                     <tbody>
                       {selectedMeasurement.extraItems.map((item, i) => (
                         <tr key={i} className="border-b border-black last:border-0 leading-tight">
-                          <td className="border-r border-black px-2 py-1 font-semibold">{item.description}</td>
-                          <td className="border-r border-black px-2 py-1 text-center font-bold capitalize">{item.type}</td>
-                          <td className="border-r border-black px-2 py-1 text-center">{item.category}</td>
-                          <td className="border-r border-black px-2 py-1 text-right">R$ {item.prevAccumulated.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                          <td className="border-r border-black px-1.5 py-1 text-right font-bold">R$ {item.measuredValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                          <td className="px-1.5 py-1 text-right font-bold text-slate-800">R$ {item.currentAccumulated.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className="border-r border-black px-2 py-1 font-semibold break-words whitespace-normal" style={{ width: extraColWidths.description }}>{item.description}</td>
+                          <td className="border-r border-black px-2 py-1 text-center font-bold capitalize" style={{ width: extraColWidths.type }}>{item.type}</td>
+                          <td className="border-r border-black px-2 py-1 text-center break-words whitespace-normal" style={{ width: extraColWidths.category }}>{item.category}</td>
+                          <td className="border-r border-black px-2 py-1 text-right" style={{ width: extraColWidths.prev }}>R$ {item.prevAccumulated.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className="border-r border-black px-1.5 py-1 text-right font-bold" style={{ width: extraColWidths.med }}>R$ {item.measuredValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className="px-1.5 py-1 text-right font-bold text-slate-800" style={{ width: extraColWidths.total }}>R$ {item.currentAccumulated.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1880,50 +2266,93 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                 <table className="w-full text-[6px]">
                   <thead>
                     <tr className="border-b border-black font-bold uppercase">
-                      <th className="border-r border-black px-2 py-1 text-left">Etapa</th>
-                      <th className="border-r border-black px-2 py-1 text-center w-24">V. Medido (Atual)</th>
-                      <th className="border-r border-black px-2 py-1 text-center w-24">% Medição</th>
-                      <th className="px-2 py-1 text-center w-24">V. Acumulado Total</th>
+                      <th className="border-r border-black px-2 py-1 text-left" style={{ width: summaryColWidths.left }}>Etapa</th>
+                      <th className="border-r border-black px-2 py-1 text-center" style={{ width: summaryColWidths.colPrev }}>V. Medido (Atual)</th>
+                      <th className="border-r border-black px-2 py-1 text-center" style={{ width: summaryColWidths.colMed }}>% Medição</th>
+                      <th className="px-2 py-1 text-center" style={{ width: summaryColWidths.colTotal }}>V. Acumulado Total</th>
                     </tr>
                   </thead>
                   <tbody>
                     {stageSummary.map((s, i) => (
                       <tr key={i} className="border-b border-black last:border-0">
-                        <td className="border-r border-black px-2 py-1 font-bold">{s.name}</td>
-                        <td className="border-r border-black px-2 py-1 text-center">R$ {s.current.toLocaleString()}</td>
-                        <td className="border-r border-black px-2 py-1 text-center">{s.percentage.toFixed(2)}%</td>
-                        <td className="px-2 py-1 text-center font-bold">R$ {s.total.toLocaleString()}</td>
+                        <td className="border-r border-black px-2 py-1 font-bold break-words whitespace-normal" style={{ width: summaryColWidths.left }}>{s.name}</td>
+                        <td className="border-r border-black px-2 py-1 text-center" style={{ width: summaryColWidths.colPrev }}>R$ {s.current.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        <td className="border-r border-black px-2 py-1 text-center" style={{ width: summaryColWidths.colMed }}>{s.percentage.toFixed(2)}%</td>
+                        <td className="px-2 py-1 text-center font-bold" style={{ width: summaryColWidths.colTotal }}>R$ {s.total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
 
+              {/* Collaborator Summary (Only for Payroll) */}
+              {selectedContract.number.startsWith('FP-') && (
+                <div className="mt-4 border border-black">
+                  <div className="bg-slate-100 border-b border-black px-2 py-1 font-bold text-[7px] uppercase">Resumo por Colaborador</div>
+                  <table className="w-full text-[6px]">
+                    <thead>
+                      <tr className="border-b border-black font-bold uppercase">
+                        <th className="border-r border-black px-2 py-1 text-left" style={{ width: summaryColWidths.left }}>Colaborador</th>
+                        <th className="border-r border-black px-2 py-1 text-center" style={{ width: summaryColWidths.colPrev }}>Dias Trabalhados</th>
+                        <th className="border-r border-black px-2 py-1 text-center" style={{ width: summaryColWidths.colMed }}>V. Medido (Atual)</th>
+                        <th className="px-2 py-1 text-center" style={{ width: summaryColWidths.colTotal }}>V. Acumulado Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {colabSummary.map((c, i) => (
+                        <tr key={i} className="border-b border-black last:border-0">
+                          <td className="border-r border-black px-2 py-1 font-bold break-words whitespace-normal" style={{ width: summaryColWidths.left }}>
+                            <span>{c.name}</span>
+                            <span className="font-normal text-slate-600 ml-1.5">
+                              (CPF: {c.cpf} | Pix: {c.pix})
+                            </span>
+                          </td>
+                          <td className="border-r border-black px-2 py-1 text-center" style={{ width: summaryColWidths.colPrev }}>{c.days}</td>
+                          <td className="border-r border-black px-2 py-1 text-center font-bold" style={{ width: summaryColWidths.colMed }}>R$ {c.current.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className="px-2 py-1 text-center font-bold" style={{ width: summaryColWidths.colTotal }}>R$ {c.total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
               {/* Footer */}
-              <div className="border-x border-b border-black flex h-24">
-                <div className="w-2/3 border-r border-black p-2 flex flex-col">
+              <div className="border-x border-b border-black flex h-24 w-full">
+                <div className="border-r border-black p-2 flex flex-col shrink-0" style={{ width: summaryColWidths.footerLeft }}>
                   <div className="font-bold text-[7px] uppercase mb-1">Observações:</div>
                   <div className="text-[8px] flex-1 italic">{selectedMeasurement.observations || 'Nenhuma observação.'}</div>
                 </div>
-                <div className="w-1/3 flex flex-col">
-                  <div className="flex-1 flex border-b border-black">
-                    <div className="w-1/2 border-r border-black flex items-center justify-center font-bold text-[7px] uppercase">Total da Medição</div>
-                    <div className="w-1/2 flex items-center justify-center font-bold text-[10px]">
+                <div className="flex flex-col shrink-0" style={{ width: summaryColWidths.footerRight }}>
+                  <div className="flex-1 flex border-b border-black w-full">
+                    <div className="border-r border-black flex items-center justify-center font-bold text-[7px] uppercase shrink-0" style={{ width: summaryColWidths.footerLabel }}>Total da Medição</div>
+                    <div className="flex items-center justify-center font-bold text-[10px] shrink-0" style={{ width: summaryColWidths.footerValue }}>
                       R$ {(() => {
+                        const isPayroll = selectedContract.number.startsWith('FP-');
                         const baseTotal = selectedMeasurement.items.reduce((acc, mi) => {
                           const item = selectedContract.items.find(i => i.id === mi.contractItemId);
-                          return acc + (mi.measuredQuantity * (item?.unitValue || 0));
+                          return acc + (mi.measuredQuantity * (item?.unitValue || 0)) + (isPayroll ? (mi.extraValue || 0) : 0);
                         }, 0);
-                        const additions = (selectedMeasurement.extraItems || []).filter(e => e.type === 'acréscimo').reduce((acc, e) => acc + (e.measuredValue || 0), 0);
-                        const deductions = (selectedMeasurement.extraItems || []).filter(e => e.type === 'desconto').reduce((acc, e) => acc + (e.measuredValue || 0), 0);
+                        const additions = isPayroll ? 0 : (selectedMeasurement.extraItems || []).filter(e => e.type === 'acréscimo').reduce((acc, e) => acc + (e.measuredValue || 0), 0);
+                        const deductions = isPayroll ? 0 : (selectedMeasurement.extraItems || []).filter(e => e.type === 'desconto').reduce((acc, e) => acc + (e.measuredValue || 0), 0);
                         return (baseTotal + additions - deductions);
                       })().toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
                   </div>
-                  <div className="flex-1 flex border-b border-black">
-                    <div className="w-1/2 border-r border-black flex items-center justify-center font-bold text-[7px] uppercase">Total Acumulado</div>
-                    <div className="w-1/2 flex items-center justify-center font-bold text-[10px]">
+                  <div className="flex-1 flex border-b border-black w-full">
+                    <div className="border-r border-black flex items-center justify-center font-bold text-[7px] uppercase shrink-0" style={{ width: summaryColWidths.footerLabel }}>Total Acumulado</div>
+                    <div className="flex items-center justify-center font-bold text-[10px] shrink-0" style={{ width: summaryColWidths.footerValue }}>
                       R$ {(() => {
+                        const isPayroll = selectedContract.number.startsWith('FP-');
+                        if (isPayroll) {
+                          return selectedMeasurement.items.reduce((acc, mi) => {
+                            const item = selectedContract.items.find(i => i.id === mi.contractItemId);
+                            const valUnit = item?.unitValue || 0;
+                            const prevVal = getAccumulatedValue(mi.contractItemId, selectedMeasurement.measurementNumber, mi.servicePath);
+                            const curVal = ((mi.measuredQuantity || 0) * valUnit) + (mi.extraValue || 0);
+                            return acc + prevVal + curVal;
+                          }, 0);
+                        }
                         const baseAccumTotal = selectedContract.items.reduce((acc, item) => {
                           const accumTotal = getAccumulatedQuantity(item.id, selectedMeasurement.measurementNumber) + (selectedMeasurement.items.find(mi => mi.contractItemId === item.id)?.measuredQuantity || 0);
                           return acc + (accumTotal * item.unitValue);
@@ -1937,7 +2366,7 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                       })().toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
                   </div>
-                  <div className="flex-1 flex flex-col p-1 text-[7px]">
+                  <div className="flex-1 flex flex-col p-1 text-[7px] w-full">
                     <div className="font-bold uppercase text-[6px] mb-0.5">Informações de Pagamento:</div>
                     <div className="flex justify-between leading-tight">
                       <span>Vencimento:</span>
@@ -1957,34 +2386,48 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                 </div>
               </div>
 
-              <div className="border-x border-b border-black flex h-14">
-                <div className="w-1/2 border-r border-black p-2 flex flex-col justify-between">
-                  <div className="font-bold text-[8px] uppercase">ASSINATURA FORNECEDOR</div>
-                  <div className="flex flex-col items-center">
-                    <div className="w-64 border-t border-black text-center text-[7px] mt-4 font-bold">
-                      {selectedContract.supplierName}
+              {selectedContract.number.startsWith('FP-') ? (
+                <div className="border-x border-b border-black p-3 flex justify-between items-center h-14 font-sans">
+                  <div className="font-bold text-[8px] text-slate-800 uppercase flex items-center gap-1">
+                    Assinado digitalmente por: <span className="text-black font-extrabold">{(() => {
+                      if (selectedMeasurement.finalizedBy) return selectedMeasurement.finalizedBy;
+                      const projectObj = projects.find(p => p.id === selectedContract.projectId);
+                      const managerObj = projectObj?.managerId ? users.find(u => u.id === projectObj.managerId) : null;
+                      return managerObj?.name || 'Gestor da Obra';
+                    })()}</span>
+                  </div>
+                  <div className="text-[6px] text-slate-400 font-sans">Gerado em: {new Date().toLocaleString('pt-BR')}</div>
+                </div>
+              ) : (
+                <div className="border-x border-b border-black flex h-14">
+                  <div className="w-1/2 border-r border-black p-2 flex flex-col justify-between">
+                    <div className="font-bold text-[8px] uppercase">ASSINATURA FORNECEDOR</div>
+                    <div className="flex flex-col items-center">
+                      <div className="w-64 border-t border-black text-center text-[7px] mt-4 font-bold">
+                        {selectedContract.supplierName}
+                      </div>
+                      {(() => {
+                        const supplier = suppliers.find(s => s.name === selectedContract.supplierName);
+                        if (supplier) {
+                          return (
+                            <div className="text-[6px] text-slate-600">
+                              {supplier.type === 'PF' ? `CPF: ${supplier.document}` : `CNPJ: ${supplier.document}`}
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
                     </div>
-                    {(() => {
-                      const supplier = suppliers.find(s => s.name === selectedContract.supplierName);
-                      if (supplier) {
-                        return (
-                          <div className="text-[6px] text-slate-600">
-                            {supplier.type === 'PF' ? `CPF: ${supplier.document}` : `CNPJ: ${supplier.document}`}
-                          </div>
-                        );
-                      }
-                      return null;
-                    })()}
+                  </div>
+                  <div className="w-1/2 p-2 flex flex-col justify-between">
+                    <div className="font-bold text-[8px] uppercase">ASSINATURA FISCALIZAÇÃO</div>
+                    <div className="flex justify-between items-end">
+                      <div className="w-48 border-t border-black text-center text-[7px] mt-4 font-bold">HM TOWER ENGENHARIA</div>
+                      <div className="text-[6px] text-slate-400">Gerado em: {new Date().toLocaleString('pt-BR')}</div>
+                    </div>
                   </div>
                 </div>
-                <div className="w-1/2 p-2 flex flex-col justify-between">
-                  <div className="font-bold text-[8px] uppercase">ASSINATURA FISCALIZAÇÃO</div>
-                  <div className="flex justify-between items-end">
-                    <div className="w-48 border-t border-black text-center text-[7px] mt-4 font-bold">HM TOWER ENGENHARIA</div>
-                    <div className="text-[6px] text-slate-400">Gerado em: {new Date().toLocaleString('pt-BR')}</div>
-                  </div>
-                </div>
-              </div>
+              )}
             </div>
           </div>
         </div>

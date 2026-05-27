@@ -96,6 +96,7 @@ export interface Project {
   latitude?: number;
   longitude?: number;
   city?: string;
+  managerId?: string;
   createdAt: number;
 }
 
@@ -224,6 +225,7 @@ export interface MeasurementItem {
   servicePath?: string;
   productivity?: number;
   totalServices?: number;
+  extraValue?: number;
 }
 
 export interface ExtraMeasurementItem {
@@ -249,6 +251,7 @@ export interface ContractMeasurement {
   extraItems?: ExtraMeasurementItem[];
   observations?: string;
   status: 'draft' | 'completed';
+  finalizedBy?: string;
   createdAt: number;
 }
 
