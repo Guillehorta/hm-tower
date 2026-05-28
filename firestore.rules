@@ -112,6 +112,15 @@ service cloud.firestore {
       return data.id is string && data.data is map && data.lastImportedAt is number;
     }
 
+    function isValidWorkDiary(data) {
+      return data.projectId is string && 
+             data.date is string && 
+             data.startTime is string && 
+             data.endTime is string && 
+             data.workedMorningAndAfternoon is bool && 
+             data.rainAmount is number;
+    }
+
     // ===============================================================
     // Rules
     // ===============================================================
@@ -213,6 +222,12 @@ service cloud.firestore {
     match /measurements/{id} {
       allow read: if isAuthenticated();
       allow create, update: if isAnyRole();
+      allow delete: if isManager();
+    }
+
+    match /workdiaries/{id} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAnyRole() && isValidWorkDiary(request.resource.data);
       allow delete: if isManager();
     }
 

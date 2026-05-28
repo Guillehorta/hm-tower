@@ -376,3 +376,31 @@ export interface SecullumEmployee {
   lastImportedAt: number;
   linkedEmployeeId?: string; // ID of the local Employee record if linked
 }
+
+export interface WorkDiary {
+  id: string;
+  projectId: string;
+  date: string; // YYYY-MM-DD
+  startTime: string;
+  endTime: string;
+  workedMorningAndAfternoon: boolean;
+  workedMorning?: boolean;
+  workedAfternoon?: boolean;
+  climateMorning?: 'SOL' | 'CHUVA';
+  climateAfternoon?: 'SOL' | 'CHUVA';
+  rainAmount: number;
+  occurrences: {
+    materials: string;
+    labor: string;
+    equipment: string;
+    others: string;
+  };
+  occurrencesList?: Array<{
+    type: string;
+    description: string;
+  }>;
+  signedBy?: string;
+  signedAt?: number;
+  generalNotes: string;
+  createdAt: number;
+}

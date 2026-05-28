@@ -75,24 +75,60 @@ export const MainDashboard: React.FC<MainDashboardProps> = ({
   };
 
   const getServiceName = (servicePath: string, projectId: string) => {
-    const project = projects.find(p => p.id === projectId);
-    if (!project || !project.costStructure) return servicePath.split('|').pop() || '';
+    const project = projects.find(p => p.id === projectId || p.name === projectId);
+    if (!project) return servicePath.split('|').pop() || '';
     
     const parts = servicePath.split('|');
-    const svId = parts[parts.length - 1];
-    
-    for (const cc of project.costStructure) {
-      for (const s of cc.stages) {
-        for (const ss of s.subStages) {
-          for (const sv of ss.services) {
-            if (sv.id === svId) {
-              return sv.name;
+    const ccId = parts[0];
+    const sId = parts[1];
+    const ssId = parts[2];
+    const svId = parts[3];
+
+    if (project.costStructure) {
+      const cc = project.costStructure.find(c => c.id === ccId);
+      if (cc) {
+        if (sId) {
+          const s = cc.stages?.find(st => st.id === sId);
+          if (s) {
+            if (ssId) {
+              const ss = s.subStages?.find(sub => sub.id === ssId);
+              if (ss) {
+                if (svId) {
+                  const sv = ss.services?.find(serv => serv.id === svId);
+                  if (sv) return sv.name;
+                }
+                return ss.name;
+              }
+            }
+            return s.name;
+          }
+        }
+        return cc.name;
+      }
+
+      // Direct lookup fallback if the path hierarchy was not preserved or is different
+      const targetId = parts[parts.length - 1];
+      for (const cc of project.costStructure) {
+        if (cc.id === targetId) return cc.name;
+        if (cc.stages) {
+          for (const s of cc.stages) {
+            if (s.id === targetId) return s.name;
+            if (s.subStages) {
+              for (const ss of s.subStages) {
+                if (ss.id === targetId) return ss.name;
+                if (ss.services) {
+                  for (const sv of ss.services) {
+                    if (sv.id === targetId) return sv.name;
+                  }
+                }
+              }
             }
           }
         }
       }
     }
-    return svId;
+    
+    return parts[parts.length - 1] || servicePath;
   };
 
   const navigatePeriod = (direction: number) => {

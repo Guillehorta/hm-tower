@@ -17,6 +17,7 @@ import { QualityModule } from './components/QualityModule';
 import { TimeTrackingModule } from './components/TimeTrackingModule';
 import { WeatherView } from './components/WeatherView';
 import { MainDashboard } from './components/MainDashboard';
+import { WorkDiaryReport } from './components/WorkDiaryReport';
 import { weatherService } from './services/weatherService';
 import { secullumService } from './services/secullumService';
 import { initializeApp, getApps, getApp } from 'firebase/app';
@@ -32,9 +33,9 @@ import {
   getAuth,
   sendPasswordResetEmail
 } from 'firebase/auth';
-import { Employee, TimeLog, LogType, Location, Company, Project, JobFunction, User, UserRole, ConstructionUnit, LaborTracking, DailyMeasurement, CostCenter, Contract, ContractMeasurement, Supplier, ServiceExecution, FVS, WeatherLog, SecullumEmployee } from './types';
+import { Employee, TimeLog, LogType, Location, Company, Project, JobFunction, User, UserRole, ConstructionUnit, LaborTracking, DailyMeasurement, CostCenter, Contract, ContractMeasurement, Supplier, ServiceExecution, FVS, WeatherLog, SecullumEmployee, WorkDiary } from './types';
 
-type ViewType = 'dashboard' | 'register' | 'admin' | 'companies' | 'projects' | 'functions' | 'daily_report' | 'period_report' | 'users' | 'login' | 'measurements' | 'suppliers' | 'employees' | 'planning' | 'quality' | 'labor_tracking' | 'weather';
+type ViewType = 'dashboard' | 'register' | 'admin' | 'companies' | 'projects' | 'functions' | 'daily_report' | 'period_report' | 'users' | 'login' | 'measurements' | 'suppliers' | 'employees' | 'planning' | 'quality' | 'labor_tracking' | 'weather' | 'work_diary';
 
 const App: React.FC = () => {
   const [view, setView] = useState<ViewType>('register');
@@ -64,6 +65,7 @@ const App: React.FC = () => {
   const [serviceExecutions, setServiceExecutions] = useState<ServiceExecution[]>([]);
   const [fvsList, setFvsList] = useState<FVS[]>([]);
   const [weatherLogs, setWeatherLogs] = useState<WeatherLog[]>([]);
+  const [workDiaries, setWorkDiaries] = useState<WorkDiary[]>([]);
   const [secullumEmployees, setSecullumEmployees] = useState<SecullumEmployee[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isAuthReady, setIsAuthReady] = useState(false);
@@ -210,7 +212,15 @@ const App: React.FC = () => {
     const unsubEmployees = storageService.subscribeEmployees(setEmployees);
     const unsubCompanies = storageService.subscribeCompanies(setCompanies);
     const unsubJobFunctions = storageService.subscribeJobFunctions(setJobFunctions);
-    const unsubWeather = storageService.subscribeWeatherLogs(setWeatherLogs);
+    const unsubWeather = storageService.subscribeWeatherLogs((logs) => {
+      const uniqueLogsMap: { [key: string]: WeatherLog } = {};
+      const sorted = [...logs].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+      sorted.forEach(log => {
+        const key = `${log.projectId}_${log.date}`;
+        uniqueLogsMap[key] = log;
+      });
+      setWeatherLogs(Object.values(uniqueLogsMap));
+    });
     const unsubTrackings = storageService.subscribeLaborTrackings(setTrackings);
     const unsubSuppliers = storageService.subscribeSuppliers(setSuppliers);
     const unsubContracts = storageService.subscribeContracts(setContracts);
@@ -218,6 +228,7 @@ const App: React.FC = () => {
     const unsubExecutions = storageService.subscribeExecutions(setServiceExecutions);
     const unsubLogs = storageService.subscribeLogs(setLogs);
     const unsubSecullum = secullumService.subscribeSecullumEmployees(setSecullumEmployees);
+    const unsubWorkDiaries = storageService.subscribeWorkDiaries(setWorkDiaries);
 
     // All authenticated users subscribe to user list to resolve managers
     const unsubUsers = storageService.subscribeUsers(setUsers);
@@ -236,9 +247,124 @@ const App: React.FC = () => {
       unsubExecutions();
       unsubLogs();
       unsubSecullum();
+      unsubWorkDiaries();
       unsubUsers();
     };
   }, [currentUser]);
+
+  // Automated consolidation & deduplication of existing local employees with the same CPF
+  useEffect(() => {
+    if (!employees || employees.length === 0) return;
+
+    // Find duplicates by CPF
+    const cpfGroups: { [cpf: string]: Employee[] } = {};
+    employees.forEach(emp => {
+      if (!emp.cpf) return;
+      const cleanCpf = emp.cpf.replace(/\D/g, '');
+      if (!cleanCpf) return;
+      
+      if (!cpfGroups[cleanCpf]) {
+        cpfGroups[cleanCpf] = [];
+      }
+      cpfGroups[cleanCpf].push(emp);
+    });
+
+    const duplicates = Object.values(cpfGroups).filter(group => group.length > 1);
+    if (duplicates.length === 0) return;
+
+    console.log(`[Deduplication] Found ${duplicates.length} CPFs with duplicate employee entries.`);
+
+    const runDeduplication = async () => {
+      for (const group of duplicates) {
+        // Find the primary record based on heuristics:
+        // 1. Has photoBase64 (essential for facial recognition)
+        // 2. Active status vs Inactive
+        // 3. Oldest creation (smallest createdAt)
+        // 4. Most fields populated
+        group.sort((a, b) => {
+          if (a.photoBase64 && !b.photoBase64) return -1;
+          if (!a.photoBase64 && b.photoBase64) return 1;
+
+          if (a.status === 'Ativo' && b.status === 'Inativo') return -1;
+          if (a.status === 'Inativo' && b.status === 'Ativo') return 1;
+
+          const createdA = a.createdAt || 0;
+          const createdB = b.createdAt || 0;
+          if (createdA !== createdB) return createdA - createdB;
+
+          const countFields = (obj: any) => Object.values(obj).filter(v => v !== null && v !== undefined && v !== '').length;
+          return countFields(b) - countFields(a);
+        });
+
+        const primary = { ...group[0] };
+        const secondaries = group.slice(1);
+
+        let changed = false;
+
+        // 1. Merge projects
+        const allProjects = new Set([...(primary.projects || [])]);
+        secondaries.forEach(sec => {
+          if (sec.projects) {
+            sec.projects.forEach(p => allProjects.add(p));
+          }
+        });
+        if (allProjects.size !== (primary.projects || []).length) {
+          primary.projects = Array.from(allProjects);
+          changed = true;
+        }
+
+        // 2. Merge nested structures and empty/missing fields
+        secondaries.forEach(sec => {
+          Object.keys(sec).forEach(key => {
+            const k = key as keyof Employee;
+            
+            if (k === 'documents') {
+              if (sec.documents) {
+                primary.documents = primary.documents || {};
+                Object.keys(sec.documents).forEach(docKey => {
+                  if (!primary.documents![docKey] && sec.documents![docKey]) {
+                    primary.documents![docKey] = sec.documents![docKey];
+                    changed = true;
+                  }
+                });
+              }
+            } else if (k === 'benefits') {
+              if (sec.benefits) {
+                primary.benefits = primary.benefits || {};
+                if (!primary.benefits.va && sec.benefits.va) { primary.benefits.va = sec.benefits.va; changed = true; }
+                if (!primary.benefits.vm && sec.benefits.vm) { primary.benefits.vm = sec.benefits.vm; changed = true; }
+              }
+            } else if (k === 'uniforms') {
+              if (sec.uniforms) {
+                primary.uniforms = primary.uniforms || {};
+                if (!primary.uniforms.shoeSize && sec.uniforms.shoeSize) { primary.uniforms.shoeSize = sec.uniforms.shoeSize; changed = true; }
+                if (!primary.uniforms.pantsSize && sec.uniforms.pantsSize) { primary.uniforms.pantsSize = sec.uniforms.pantsSize; changed = true; }
+                if (!primary.uniforms.shirtSize && sec.uniforms.shirtSize) { primary.uniforms.shirtSize = sec.uniforms.shirtSize; changed = true; }
+              }
+            } else {
+              if ((primary[k] === undefined || primary[k] === null || primary[k] === '') && sec[k] !== undefined && sec[k] !== null && sec[k] !== '') {
+                // @ts-ignore
+                primary[k] = sec[k];
+                changed = true;
+              }
+            }
+          });
+        });
+
+        // Save the consolidated primary record
+        await storageService.saveEmployee(primary);
+
+        // Delete other duplicate records from Firestore
+        for (const sec of secondaries) {
+          await storageService.deleteEmployee(sec.id);
+        }
+      }
+    };
+
+    runDeduplication().catch(err => {
+      console.error("[Deduplication] Error cleaning up duplicates:", err);
+    });
+  }, [employees]);
 
   // Weather Auto-Sync Logic
   useEffect(() => {
@@ -1277,6 +1403,12 @@ const App: React.FC = () => {
                   className={`w-full text-left px-6 py-2.5 rounded-r-xl transition flex items-center gap-3 text-sm ${view === 'quality' ? 'bg-indigo-800 text-white' : 'text-indigo-100 hover:bg-indigo-800/30'}`}
                 >
                   <i className="fas fa-clipboard-check w-4"></i> Cadastro FVS
+                </button>
+                <button 
+                  onClick={() => setView('work_diary')}
+                  className={`w-full text-left px-6 py-2.5 rounded-r-xl transition flex items-center gap-3 text-sm ${view === 'work_diary' ? 'bg-indigo-800 text-white' : 'text-indigo-100 hover:bg-indigo-800/30'}`}
+                >
+                  <i className="fas fa-book w-4"></i> Diário de Obras
                 </button>
               </div>
             )}
@@ -2636,10 +2768,11 @@ const App: React.FC = () => {
 
                 {/* Period Report Logic */}
                 {(() => {
-                  const start = new Date(reportStartDate);
-                  start.setHours(0,0,0,0);
-                  const end = new Date(reportEndDate);
-                  end.setHours(23,59,59,999);
+                  const [startY, startM, startD] = reportStartDate.split('-').map(Number);
+                  const start = new Date(startY, startM - 1, startD, 0, 0, 0, 0);
+                  
+                  const [endY, endM, endD] = reportEndDate.split('-').map(Number);
+                  const end = new Date(endY, endM - 1, endD, 23, 59, 59, 999);
 
                   const filteredLogs = logs.filter(l => {
                     const logDate = new Date(l.timestamp);
@@ -2914,6 +3047,35 @@ const App: React.FC = () => {
                       onConfirm
                     });
                   }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Diário de Obras */}
+          {view === 'work_diary' && currentUser && (
+            <div className="max-w-full mx-auto space-y-8">
+              <div className="bg-white p-8 rounded-3xl shadow-xl border border-slate-200">
+                <div className="flex items-center gap-4 mb-8">
+                  <div className="w-12 h-12 bg-indigo-100 rounded-2xl flex items-center justify-center text-indigo-600">
+                    <i className="fas fa-book text-xl"></i>
+                  </div>
+                  <div>
+                    <h2 className="text-2xl font-bold text-slate-800 tracking-tight">Diário de Obras</h2>
+                    <p className="text-slate-500 text-sm italic">Emita relatórios diários de obras com resumo de clima, colaboradores por função, progresso físico e ocorrências.</p>
+                  </div>
+                </div>
+
+                <WorkDiaryReport
+                  projects={userProjects}
+                  employees={employees}
+                  laborTrackings={trackings}
+                  serviceExecutions={serviceExecutions}
+                  weatherLogs={weatherLogs}
+                  workDiaries={workDiaries}
+                  onFeedback={handleFeedback}
+                  currentUser={currentUser}
+                  jobFunctions={jobFunctions}
                 />
               </div>
             </div>

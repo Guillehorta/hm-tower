@@ -1,4 +1,4 @@
-import { Employee, TimeLog, Company, Project, JobFunction, User, LaborTracking, DailyMeasurement, Contract, ContractMeasurement, Supplier, ServiceExecution, FVS, WeatherLog } from '../types';
+import { Employee, TimeLog, Company, Project, JobFunction, User, LaborTracking, DailyMeasurement, Contract, ContractMeasurement, Supplier, ServiceExecution, FVS, WeatherLog, WorkDiary } from '../types';
 import { db } from '../src/firebase';
 import { 
   collection, 
@@ -42,7 +42,8 @@ const KEYS = {
   SUPPLIERS: 'suppliers',
   SERVICE_EXECUTIONS: 'executions',
   FVS: 'fvs',
-  WEATHER_LOGS: 'weatherlogs'
+  WEATHER_LOGS: 'weatherlogs',
+  WORK_DIARIES: 'workdiaries'
 };
 
 interface StorageService {
@@ -58,6 +59,7 @@ interface StorageService {
   subscribeLaborTrackings: (callback: (data: LaborTracking[]) => void) => () => void;
   subscribeLogs: (callback: (data: TimeLog[]) => void) => () => void;
   subscribeWeatherLogs: (callback: (data: WeatherLog[]) => void) => () => void;
+  subscribeWorkDiaries: (callback: (data: WorkDiary[]) => void) => () => void;
   subscribeUsers: (callback: (data: User[]) => void) => () => void;
   getProjects: () => Promise<Project[]>;
   getEmployees: () => Promise<Employee[]>;
@@ -101,6 +103,8 @@ interface StorageService {
   getMeasurements: () => Promise<DailyMeasurement[]>;
   saveMeasurement: (m: DailyMeasurement) => Promise<void>;
   saveWeatherLog: (log: WeatherLog) => Promise<void>;
+  saveWorkDiary: (diary: WorkDiary) => Promise<void>;
+  deleteWorkDiary: (id: string) => Promise<void>;
 }
 
 // Helper to remove/replace undefined values before saving to Firestore (recursive)
@@ -586,6 +590,28 @@ export const storageService: StorageService = {
       callback(getLocalCollection(KEYS.WEATHER_LOGS));
     }
     const unsubFallback = registerFallbackCallback(KEYS.WEATHER_LOGS, callback);
+    return () => {
+      unsub();
+      unsubFallback();
+    };
+  },
+
+  subscribeWorkDiaries: (callback: (data: WorkDiary[]) => void) => {
+    let unsub = () => {};
+    try {
+      unsub = onSnapshot(collection(db, KEYS.WORK_DIARIES), (snapshot) => {
+        const data = snapshot.docs.map(doc => doc.data() as WorkDiary);
+        saveLocalCollection(KEYS.WORK_DIARIES, data, false);
+        callback(data);
+      }, (err) => {
+        handleFirestoreError(err, OperationType.LIST, KEYS.WORK_DIARIES);
+        callback(getLocalCollection(KEYS.WORK_DIARIES));
+      });
+    } catch (err) {
+      console.warn("Failed Work Diaries setup:", err);
+      callback(getLocalCollection(KEYS.WORK_DIARIES));
+    }
+    const unsubFallback = registerFallbackCallback(KEYS.WORK_DIARIES, callback);
     return () => {
       unsub();
       unsubFallback();
@@ -1297,6 +1323,34 @@ export const storageService: StorageService = {
       await setDoc(doc(db, key, log.id), sanitized);
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, `${key}/${log.id}`);
+    }
+  },
+
+  saveWorkDiary: async (diary: WorkDiary) => {
+    const key = KEYS.WORK_DIARIES;
+    const current = getLocalCollection(key);
+    const idx = current.findIndex(x => x.id === diary.id);
+    if (idx >= 0) { current[idx] = diary; } else { current.push(diary); }
+    saveLocalCollection(key, current);
+
+    try {
+      const sanitized = sanitizeForFirestore(diary);
+      await setDoc(doc(db, key, diary.id), sanitized);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `${key}/${diary.id}`);
+    }
+  },
+
+  deleteWorkDiary: async (id: string) => {
+    const key = KEYS.WORK_DIARIES;
+    let current = getLocalCollection(key);
+    current = current.filter(x => x.id !== id);
+    saveLocalCollection(key, current);
+
+    try {
+      await deleteDoc(doc(db, key, id));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `${key}/${id}`);
     }
   }
 };

@@ -34,6 +34,115 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
 }) => {
   const [view, setView] = useState<'list' | 'form' | 'secullum'>('list');
   const [activeTab, setActiveTab] = useState<TabType>('personal');
+
+  // Groups and merges Secullum profile items by CPF, choosing dominant fields
+  const mergedSecullumEmployees = useMemo(() => {
+    if (!secullumEmployees || secullumEmployees.length === 0) return [];
+    
+    const groups: { [cpf: string]: SecullumEmployee[] } = {};
+    for (const sEmp of secullumEmployees) {
+      const rawCpf = sEmp.data.Cpf || '';
+      const name = sEmp.data.Nome;
+      if (!rawCpf || !name) continue;
+      
+      const cpf = maskCPF(rawCpf);
+      if (!groups[cpf]) {
+        groups[cpf] = [];
+      }
+      groups[cpf].push(sEmp);
+    }
+
+    const mergedList: SecullumEmployee[] = [];
+
+    for (const cpf of Object.keys(groups)) {
+      const group = groups[cpf];
+      if (group.length === 1) {
+        mergedList.push(group[0]);
+        continue;
+      }
+
+      // Sort so that the MOST updated/active one is first (index 0)
+      group.sort((a, b) => {
+        // 1. Sort by Status (Active first)
+        const demA = a.data.DataDemissao || a.data.Demissao || a.data.Data_Demissao || a.data.DataDemissaoFormatada;
+        const demB = b.data.DataDemissao || b.data.Demissao || b.data.Data_Demissao || b.data.DataDemissaoFormatada;
+        const hasDemA = demA && demA !== "null" && demA !== "undefined" && demA !== "" && !demA.toString().startsWith("0001") && !demA.toString().startsWith("1900");
+        const hasDemB = demB && demB !== "null" && demB !== "undefined" && demB !== "" && !demB.toString().startsWith("0001") && !demB.toString().startsWith("1900");
+        
+        if (!hasDemA && hasDemB) return -1;
+        if (hasDemA && !hasDemB) return 1;
+
+        // 2. Sort by explicit update date field if available
+        const getUpdateDate = (data: any) => {
+          const val = data.DataAlteracao || data.Data_Alteracao || data.UltimaAlteracao || data.DataUltimaAlteracao || data.DataHoraAlteracao;
+          if (val) {
+            const d = new Date(val);
+            return isNaN(d.getTime()) ? 0 : d.getTime();
+          }
+          return 0;
+        };
+        const updateA = getUpdateDate(a.data);
+        const updateB = getUpdateDate(b.data);
+        if (updateA !== updateB) {
+          return updateB - updateA;
+        }
+
+        // 3. Sort by Admission Date (newer first)
+        const admAVal = a.data.Admissao ? new Date(a.data.Admissao).getTime() : 0;
+        const admBVal = b.data.Admissao ? new Date(b.data.Admissao).getTime() : 0;
+        const admA = isNaN(admAVal) ? 0 : admAVal;
+        const admB = isNaN(admBVal) ? 0 : admBVal;
+        if (admA !== admB) {
+          return admB - admA;
+        }
+
+        // 4. Sort by numeric id
+        const idA = Number(a.id || a.data.id || a.data.Id) || 0;
+        const idB = Number(b.id || b.data.id || b.data.Id) || 0;
+        return idB - idA;
+      });
+
+      // Merge remaining attributes to fill missing gaps
+      const primary = { ...group[0] };
+      const mergedData = { ...primary.data };
+
+      // Aggregate all work location projects
+      const allProjects = new Set<string>();
+      const getProjId = (remoteEmp: any) => {
+        const obraId = Number(remoteEmp.ObraId);
+        let targetName = '';
+        if (obraId === 2) targetName = 'Residencial Haway';
+        else if (obraId === 3) targetName = 'Residencial Belle Vie';
+        else if (obraId === 4) targetName = 'Duplex Guestier';
+        if (targetName) {
+          const found = projects.find(p => p.name.toUpperCase().includes(targetName.toUpperCase()));
+          return found ? found.id : null;
+        }
+        return null;
+      };
+
+      const primaryProjId = getProjId(mergedData);
+      if (primaryProjId) allProjects.add(primaryProjId);
+
+      for (let i = 1; i < group.length; i++) {
+        const other = group[i].data;
+        const otherProjId = getProjId(other);
+        if (otherProjId) allProjects.add(otherProjId);
+
+        Object.keys(other).forEach(key => {
+          if (!mergedData[key] && other[key] !== null && other[key] !== undefined && other[key] !== '') {
+            mergedData[key] = other[key];
+          }
+        });
+      }
+
+      mergedData.mergedProjects = Array.from(allProjects);
+      primary.data = mergedData;
+      mergedList.push(primary);
+    }
+
+    return mergedList;
+  }, [secullumEmployees, projects]);
   const [editingEmployee, setEditingEmployee] = useState<Partial<Employee> | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
   const [isLoadingAPI, setIsLoadingAPI] = useState(false);
@@ -247,6 +356,14 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
       }
     }
 
+    if (Array.isArray(remoteEmp.mergedProjects)) {
+      remoteEmp.mergedProjects.forEach((pId: string) => {
+        if (!autoProjects.includes(pId)) {
+          autoProjects.push(pId);
+        }
+      });
+    }
+
     const hmTower = companies.find(c => c.name.includes('HM TOWER'))?.name || 'HM TOWER ENGENHARIA E CONSTRUÇÕES LTDA';
     const rks = companies.find(c => c.name.includes('RKS'))?.name || 'RKS EMPREITEIRA DE MÃO-DE-OBRA';
     const diaristas = companies.find(c => c.name.includes('DIARISTAS'))?.name || 'DIARISTAS';
@@ -398,7 +515,7 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
 
   // Synchronizes all database items
   const handleSyncAllEmployees = () => {
-    if (secullumEmployees.length === 0) {
+    if (mergedSecullumEmployees.length === 0) {
       onFeedback?.('error', 'Nenhum funcionário na base Secullum para sincronizar.');
       return;
     }
@@ -409,7 +526,7 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
     const employeesToSave: Employee[] = [];
 
     // Register any new unique job functions dynamically
-    const uniqueFunctions = Array.from(new Set(secullumEmployees.map(s => 
+    const uniqueFunctions = Array.from(new Set(mergedSecullumEmployees.map(s => 
       s.data.FuncaoDescricao || s.data.FuncaoNome || s.data.CargoDescricao || s.data.Cargo
     ).filter(Boolean)));
     
@@ -424,7 +541,7 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
       }
     });
 
-    for (const sEmp of secullumEmployees) {
+    for (const sEmp of mergedSecullumEmployees) {
       const cpf = maskCPF(sEmp.data.Cpf || '');
       const name = sEmp.data.Nome;
       if (!cpf || !name) {
@@ -673,7 +790,7 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {secullumEmployees.sort((a,b) => (a.data.Nome || '').localeCompare(b.data.Nome || '')).map(sEmp => {
+                  {mergedSecullumEmployees.sort((a,b) => (a.data.Nome || '').localeCompare(b.data.Nome || '')).map(sEmp => {
                     const syncStatus = getSecullumEmployeeSyncStatus(sEmp);
                     return (
                       <tr key={sEmp.id} className="hover:bg-slate-50 transition-colors">
@@ -739,7 +856,7 @@ export const EmployeeAdminView: React.FC<EmployeeAdminProps> = ({
                       </tr>
                     );
                   })}
-                  {secullumEmployees.length === 0 && (
+                  {mergedSecullumEmployees.length === 0 && (
                     <tr>
                       <td colSpan={8} className="px-6 py-12 text-center text-slate-400 italic font-medium">
                         Nenhum dado retornado do Secullum ainda. Clique em "Trazer Dados da Base" para carregar as informações.

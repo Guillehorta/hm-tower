@@ -297,11 +297,8 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
     
     const mapping: { [servicePath: string]: string[] } = {};
     
-    const start = new Date(searchStartDate).getTime();
-    const end = new Date(searchEndDate).getTime();
     const filtered = laborTracking.filter(t => {
-      const tDate = new Date(t.date).getTime();
-      return t.projectId === selectedContract.projectId && tDate >= start && tDate <= end;
+      return t.projectId === selectedContract.projectId && t.date >= searchStartDate && t.date <= searchEndDate;
     });
 
     const project = projects.find(p => p.id === selectedContract.projectId);
@@ -330,19 +327,21 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
     let totalCurrentValue = 0;
     const isPayroll = selectedContract.number.startsWith('FP-');
 
-    // 1. Core items
-    selectedContract.items.forEach(item => {
-      const mItem = selectedMeasurement.items.find(mi => mi.contractItemId === item.id);
-      const measuredValue = (mItem?.measuredQuantity || 0) * item.unitValue + (isPayroll ? (mItem?.extraValue || 0) : 0);
+    // 1. Core items from selectedMeasurement.items
+    selectedMeasurement.items.forEach(mItem => {
+      const item = selectedContract.items.find(i => i.id === mItem.contractItemId);
+      if (!item) return;
+
+      const measuredValue = (mItem.measuredQuantity || 0) * item.unitValue + (isPayroll ? (mItem.extraValue || 0) : 0);
       const accumPrevVal = isPayroll
-        ? getAccumulatedValue(item.id, selectedMeasurement.measurementNumber, mItem?.servicePath)
+        ? getAccumulatedValue(item.id, selectedMeasurement.measurementNumber, mItem.servicePath)
         : getAccumulatedQuantity(item.id, selectedMeasurement.measurementNumber) * item.unitValue;
       const totalValue = accumPrevVal + measuredValue;
       
       totalCurrentValue += measuredValue;
 
       let stageName = 'Outros';
-      const svcPath = mItem?.servicePath || item.servicePath;
+      const svcPath = mItem.servicePath || item.servicePath;
       if (svcPath) {
         const [ccId, stId] = svcPath.split('|');
         const project = projects.find(p => p.id === selectedContract.projectId);
@@ -397,12 +396,14 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
     const isPayroll = selectedContract.number.startsWith('FP-');
     if (!isPayroll) return [];
 
-    selectedContract.items.forEach(item => {
-      const mItem = selectedMeasurement.items.find(mi => mi.contractItemId === item.id);
-      const measuredQty = mItem?.measuredQuantity || 0;
+    selectedMeasurement.items.forEach(mItem => {
+      const item = selectedContract.items.find(i => i.id === mItem.contractItemId);
+      if (!item) return;
+
+      const measuredQty = mItem.measuredQuantity || 0;
       const valUnit = item.unitValue;
-      const measuredValue = (measuredQty * valUnit) + (mItem?.extraValue || 0);
-      const accumPrevVal = getAccumulatedValue(item.id, selectedMeasurement.measurementNumber, mItem?.servicePath);
+      const measuredValue = (measuredQty * valUnit) + (mItem.extraValue || 0);
+      const accumPrevVal = getAccumulatedValue(item.id, selectedMeasurement.measurementNumber, mItem.servicePath);
       const totalValue = accumPrevVal + measuredValue;
 
       const colabName = item.description;
@@ -558,13 +559,9 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
   const handleSearchLabor = () => {
     if (!selectedContract) return;
 
-    const start = new Date(searchStartDate).getTime();
-    const end = new Date(searchEndDate).getTime();
-
-    // Filter trackings for this project and date range
+    // Filter trackings for this project and date range (timezone-proof string comparison)
     const filteredTrackings = laborTracking.filter(t => {
-      const tDate = new Date(t.date).getTime();
-      return t.projectId === selectedContract.projectId && tDate >= start && tDate <= end;
+      return t.projectId === selectedContract.projectId && t.date >= searchStartDate && t.date <= searchEndDate;
     });
 
     const items: MeasurementItem[] = [];
@@ -578,8 +575,8 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
 
     if (isPayrollMode) {
       selectedContract.items.forEach(contractItem => {
-        // In payroll mode, description is the employee name
-        const employee = employees.find(e => e.name === contractItem.description);
+        // In payroll mode, description is the employee name (robust matching with trim and lowercase)
+        const employee = employees.find(e => e.name.trim().toLowerCase() === contractItem.description.trim().toLowerCase());
         if (!employee) return;
 
         const employeeTrackings = filteredTrackings.filter(t => t.employeeId === employee.id);
@@ -2205,27 +2202,7 @@ export const ContractMeasurementsView: React.FC<ContractMeasurementsProps> = ({
                       </tr>
                     );
                   })}
-                  {(() => {
-                    const isPayroll = selectedContract.number.startsWith('FP-');
-                    return Array.from({ length: Math.max(0, 15 - selectedMeasurement.items.length) }).map((_, i) => (
-                      <tr key={`empty-${i}`} className="border-b border-black h-5">
-                        <td className="border-r border-black" style={{ width: colWidths.item }}></td>
-                        <td className="border-r border-black" style={{ width: colWidths.description }}></td>
-                        <td className="border-r border-black" style={{ width: colWidths.servicio }}></td>
-                        <td className="border-r border-black" style={{ width: colWidths.un }}></td>
-                        {!isPayroll && <td className="border-r border-black" style={{ width: colWidths.qt0 }}></td>}
-                        <td className="border-r border-black" style={{ width: colWidths.qt1 }}></td>
-                        <td className="border-r border-black" style={{ width: colWidths.qt2 }}></td>
-                        <td className="border-r border-black" style={{ width: colWidths.prod }}></td>
-                        <td className="border-r border-black" style={{ width: colWidths.qt3 }}></td>
-                        <td className="border-r border-black" style={{ width: colWidths.vunit }}></td>
-                        {isPayroll && <td className="border-r border-black" style={{ width: colWidths.extras }}></td>}
-                        <td className="border-r border-black" style={{ width: colWidths.vacPrev }}></td>
-                        <td className="border-r border-black" style={{ width: colWidths.vmed }}></td>
-                        <td style={{ width: colWidths.vacTotal }}></td>
-                      </tr>
-                    ));
-                  })()}
+                  {/* Empty padding rows removed to not show blank rows */}
                 </tbody>
               </table>
 

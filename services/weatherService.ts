@@ -97,7 +97,7 @@ export const weatherService = {
       const weatherData = await weatherService.fetchHistoricalWeather(project.latitude, project.longitude, dateStr);
       if (weatherData) {
         const newLog: WeatherLog = {
-          id: generateId(),
+          id: `${project.id}_${dateStr}`,
           projectId: project.id,
           date: dateStr,
           ...weatherData,

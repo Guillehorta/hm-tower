@@ -132,6 +132,32 @@
         "linkedEmployeeId": { "type": "string" }
       },
       "required": ["id", "data", "lastImportedAt"]
+    },
+    "WorkDiary": {
+      "title": "Diário de Obras",
+      "description": "Relatório diário de controle e ocorrências de obras.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "projectId": { "type": "string" },
+        "date": { "type": "string" },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "workedMorningAndAfternoon": { "type": "boolean" },
+        "rainAmount": { "type": "number" },
+        "occurrences": {
+          "type": "object",
+          "properties": {
+            "materials": { "type": "string" },
+            "labor": { "type": "string" },
+            "equipment": { "type": "string" },
+            "others": { "type": "string" }
+          }
+        },
+        "generalNotes": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "projectId", "date"]
     }
   },
   "firestore": {
@@ -170,6 +196,10 @@
     "/secullum_employees/{id}": {
       "schema": "SecullumEmployee",
       "description": "Dados de funcionários importados do Secullum."
+    },
+    "/workdiaries/{id}": {
+      "schema": "WorkDiary",
+      "description": "Relatórios de diários de obras."
     }
   }
 }
