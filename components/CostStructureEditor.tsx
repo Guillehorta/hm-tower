@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { CostCenter, CostStage, CostSubStage, CostService, ConstructionUnit } from '../types';
+import { CostCenter, CostStage, CostSubStage, CostService, ConstructionUnit, ServiceExecution } from '../types';
 import { generateId } from '../src/lib/utils';
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
 
@@ -7,9 +7,19 @@ interface CostStructureEditorProps {
   costStructure: CostCenter[];
   onChange: (costStructure: CostCenter[]) => void;
   constructionUnits?: ConstructionUnit[];
+  serviceExecutions?: ServiceExecution[];
+  projectId?: string | null;
+  onDeleteServiceExecutions?: (ids: string[]) => void;
 }
 
-export const CostStructureEditor: React.FC<CostStructureEditorProps> = ({ costStructure, onChange, constructionUnits = [] }) => {
+export const CostStructureEditor: React.FC<CostStructureEditorProps> = ({ 
+  costStructure, 
+  onChange, 
+  constructionUnits = [],
+  serviceExecutions = [],
+  projectId = null,
+  onDeleteServiceExecutions
+}) => {
   const [showSelectorFor, setShowSelectorFor] = useState<string | null>(null);
 
   const getOptionsForLevel = (level: string) => {
@@ -171,6 +181,49 @@ export const CostStructureEditor: React.FC<CostStructureEditorProps> = ({ costSt
   };
 
   const updateService = (ccId: string, stageId: string, ssId: string, svId: string, updates: Partial<CostService>) => {
+    // Audit EAP linkages if linkedLevel or linkedComponentIds is changed
+    if (updates.linkedLevel !== undefined || updates.linkedComponentIds !== undefined) {
+      if (projectId && serviceExecutions.length > 0 && onDeleteServiceExecutions) {
+        const currentCc = costStructure.find(cc => cc.id === ccId);
+        const currentStage = currentCc?.stages?.find(s => s.id === stageId);
+        const currentSs = currentStage?.subStages?.find(ss => ss.id === ssId);
+        const currentSv = currentSs?.services?.find(sv => sv.id === svId);
+
+        if (currentSv) {
+          const servicePath = `${ccId}|${stageId}|${ssId}|${svId}`;
+          const relevantExecutions = serviceExecutions.filter(
+            ex => ex.projectId === projectId && ex.servicePath === servicePath
+          );
+
+          if (relevantExecutions.length > 0) {
+            const nextComponentIds = updates.linkedComponentIds !== undefined 
+              ? updates.linkedComponentIds 
+              : (currentSv.linkedComponentIds || []);
+
+            // Identify executions that belong to deselected / unlinked components
+            const executionsToDelete = relevantExecutions.filter(ex => {
+              const parts = ex.componentPath.split('|');
+              const compId = parts[parts.length - 1];
+              return !nextComponentIds.includes(compId);
+            });
+
+            if (executionsToDelete.length > 0) {
+              const confirmed = window.confirm(
+                "Já existe apontamentos vinculados a este componente, a alteração causará a exclusão dos apontamentos. Clique em Ok para continuar a alteração e cancelar para cancelar a alteração"
+              );
+              if (!confirmed) {
+                return; // User canceled the change
+              }
+
+              // Proceed and delete the invalid appointments instantly
+              const idsToDelete = executionsToDelete.map(ex => ex.id);
+              onDeleteServiceExecutions(idsToDelete);
+            }
+          }
+        }
+      }
+    }
+
     onChange(costStructure.map(cc => {
       if (cc.id === ccId) {
         return {

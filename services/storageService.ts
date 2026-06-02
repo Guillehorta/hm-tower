@@ -92,6 +92,7 @@ interface StorageService {
   deleteLogs: (ids: string[]) => Promise<void>;
   saveServiceExecution: (execution: ServiceExecution) => Promise<void>;
   saveServiceExecutions: (executions: ServiceExecution[]) => Promise<void>;
+  deleteServiceExecutions: (ids: string[]) => Promise<void>;
   saveCompany: (company: Company) => Promise<void>;
   deleteCompany: (id: string) => Promise<void>;
   saveJobFunction: (jobFunction: JobFunction) => Promise<void>;
@@ -1308,6 +1309,27 @@ export const storageService: StorageService = {
       }
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, key);
+    }
+  },
+
+  deleteServiceExecutions: async (ids: string[]) => {
+    const key = KEYS.SERVICE_EXECUTIONS;
+    const current = getLocalCollection(key).filter(ex => !ids.includes(ex.id));
+    saveLocalCollection(key, current);
+
+    try {
+      const { writeBatch } = await import('firebase/firestore');
+      for (let i = 0; i < ids.length; i += 500) {
+        const batch = writeBatch(db);
+        const chunk = ids.slice(i, i + 500);
+        chunk.forEach(id => {
+          const docRef = doc(db, key, id);
+          batch.delete(docRef);
+        });
+        await batch.commit();
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, key);
     }
   },
 

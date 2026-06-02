@@ -366,6 +366,57 @@ const App: React.FC = () => {
     });
   }, [employees]);
 
+  // Automated cleanup of invalid ServiceExecutions (apontamentos)
+  useEffect(() => {
+    if (!projects || projects.length === 0 || !serviceExecutions || serviceExecutions.length === 0) return;
+
+    const invalidIds: string[] = [];
+
+    serviceExecutions.forEach(ex => {
+      const proj = projects.find(p => p.id === ex.projectId);
+      if (!proj) return;
+
+      const parts = ex.servicePath ? ex.servicePath.split('|') : [];
+      if (parts.length < 4) {
+        invalidIds.push(ex.id);
+        return;
+      }
+      const [ccId, sId, ssId, svId] = parts;
+
+      const cc = proj.costStructure?.find(c => c.id === ccId);
+      const stage = cc?.stages?.find(s => s.id === sId);
+      const subStage = stage?.subStages?.find(ss => ss.id === ssId);
+      const service = subStage?.services?.find(sv => sv.id === svId);
+
+      if (!service) {
+        invalidIds.push(ex.id);
+        return;
+      }
+
+      if (!service.linkedLevel) {
+        invalidIds.push(ex.id);
+        return;
+      }
+
+      const componentParts = ex.componentPath ? ex.componentPath.split('|') : [];
+      if (componentParts.length === 0) {
+        invalidIds.push(ex.id);
+        return;
+      }
+      const compId = componentParts[componentParts.length - 1];
+
+      if (!service.linkedComponentIds || !service.linkedComponentIds.includes(compId)) {
+        invalidIds.push(ex.id);
+      }
+    });
+
+    if (invalidIds.length > 0) {
+      console.log(`[Clean Up] Automated task found ${invalidIds.length} invalid/obsolete service executions. Deleting...`);
+      setServiceExecutions(prev => prev.filter(e => !invalidIds.includes(e.id)));
+      storageService.deleteServiceExecutions(invalidIds);
+    }
+  }, [projects, serviceExecutions]);
+
   // Weather Auto-Sync Logic
   useEffect(() => {
     if (projects.length > 0 && !isWeatherSynced && weatherLogs.length >= 0) {
@@ -813,6 +864,11 @@ const App: React.FC = () => {
   const handleSaveServiceExecutions = (executions: ServiceExecution[]) => {
     setServiceExecutions(executions);
     storageService.saveServiceExecutions(executions);
+  };
+
+  const handleDeleteServiceExecutions = (ids: string[]) => {
+    setServiceExecutions(prev => prev.filter(e => !ids.includes(e.id)));
+    storageService.deleteServiceExecutions(ids);
   };
 
   const handleSaveTracking = (tracking: LaborTracking) => {
@@ -1999,6 +2055,9 @@ const App: React.FC = () => {
                           costStructure={newProjectCostStructure}
                           onChange={setNewProjectCostStructure}
                           constructionUnits={newProjectConstructionUnits}
+                          serviceExecutions={serviceExecutions}
+                          projectId={editingProjectId}
+                          onDeleteServiceExecutions={handleDeleteServiceExecutions}
                         />
                       </div>
                     ) : (
