@@ -21,6 +21,14 @@ export const CostStructureEditor: React.FC<CostStructureEditorProps> = ({
   onDeleteServiceExecutions
 }) => {
   const [showSelectorFor, setShowSelectorFor] = useState<string | null>(null);
+  const [pendingUpdate, setPendingUpdate] = useState<{
+    ccId: string;
+    stageId: string;
+    ssId: string;
+    svId: string;
+    updates: Partial<CostService>;
+    idsToDelete: string[];
+  } | null>(null);
 
   const getOptionsForLevel = (level: string) => {
     const options: { id: string; name: string; parentName?: string }[] = [];
@@ -180,6 +188,34 @@ export const CostStructureEditor: React.FC<CostStructureEditorProps> = ({
     }));
   };
 
+  const applyServiceUpdate = (ccId: string, stageId: string, ssId: string, svId: string, updates: Partial<CostService>) => {
+    onChange(costStructure.map(cc => {
+      if (cc.id === ccId) {
+        return {
+          ...cc,
+          stages: cc.stages.map(s => {
+            if (s.id === stageId) {
+              return {
+                ...s,
+                subStages: s.subStages.map(ss => {
+                  if (ss.id === ssId) {
+                    return {
+                      ...ss,
+                      services: ss.services?.map(sv => sv.id === svId ? { ...sv, ...updates } : sv)
+                    };
+                  }
+                  return ss;
+                })
+              };
+            }
+            return s;
+          })
+        };
+      }
+      return cc;
+    }));
+  };
+
   const updateService = (ccId: string, stageId: string, ssId: string, svId: string, updates: Partial<CostService>) => {
     // Audit EAP linkages if linkedLevel or linkedComponentIds is changed
     if (updates.linkedLevel !== undefined || updates.linkedComponentIds !== undefined) {
@@ -208,47 +244,36 @@ export const CostStructureEditor: React.FC<CostStructureEditorProps> = ({
             });
 
             if (executionsToDelete.length > 0) {
-              const confirmed = window.confirm(
-                "Já existe apontamentos vinculados a este componente, a alteração causará a exclusão dos apontamentos. Clique em Ok para continuar a alteração e cancelar para cancelar a alteração"
-              );
-              if (!confirmed) {
-                return; // User canceled the change
-              }
-
-              // Proceed and delete the invalid appointments instantly
-              const idsToDelete = executionsToDelete.map(ex => ex.id);
-              onDeleteServiceExecutions(idsToDelete);
+              setPendingUpdate({
+                ccId,
+                stageId,
+                ssId,
+                svId,
+                updates,
+                idsToDelete: executionsToDelete.map(ex => ex.id)
+              });
+              return; // Halt update to wait for user custom modal confirmation
             }
           }
         }
       }
     }
 
-    onChange(costStructure.map(cc => {
-      if (cc.id === ccId) {
-        return {
-          ...cc,
-          stages: cc.stages.map(s => {
-            if (s.id === stageId) {
-              return {
-                ...s,
-                subStages: s.subStages.map(ss => {
-                  if (ss.id === ssId) {
-                    return {
-                      ...ss,
-                      services: ss.services?.map(sv => sv.id === svId ? { ...sv, ...updates } : sv)
-                    };
-                  }
-                  return ss;
-                })
-              };
-            }
-            return s;
-          })
-        };
-      }
-      return cc;
-    }));
+    applyServiceUpdate(ccId, stageId, ssId, svId, updates);
+  };
+
+  const confirmPendingUpdate = () => {
+    if (!pendingUpdate) return;
+    const { ccId, stageId, ssId, svId, updates, idsToDelete } = pendingUpdate;
+    if (idsToDelete.length > 0 && onDeleteServiceExecutions) {
+      onDeleteServiceExecutions(idsToDelete);
+    }
+    applyServiceUpdate(ccId, stageId, ssId, svId, updates);
+    setPendingUpdate(null);
+  };
+
+  const cancelPendingUpdate = () => {
+    setPendingUpdate(null);
   };
 
   const removeService = (ccId: string, stageId: string, ssId: string, svId: string) => {
@@ -640,6 +665,44 @@ export const CostStructureEditor: React.FC<CostStructureEditorProps> = ({
           )}
         </Droppable>
       </DragDropContext>
+
+      {/* Custom Confirmation Modal */}
+      {pendingUpdate && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-100 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-start gap-4">
+              <div className="w-10 h-10 rounded-full bg-rose-50 flex items-center justify-center text-rose-600 shrink-0">
+                <i className="fas fa-exclamation-triangle text-lg animate-pulse"></i>
+              </div>
+              <div className="space-y-2">
+                <h3 className="text-base font-bold text-slate-800">Confirmar alteração de componente?</h3>
+                <p className="text-sm text-slate-600 leading-relaxed">
+                  Já existem apontamentos vinculados a este componente. A alteração causará a exclusão dos apontamentos correspondentes.
+                </p>
+                <p className="text-xs text-rose-500 font-medium font-mono">
+                  Esta ação é irreversível e excluirá {pendingUpdate.idsToDelete.length} apontamento(s).
+                </p>
+              </div>
+            </div>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={cancelPendingUpdate}
+                className="px-4 py-2 bg-slate-100 text-slate-700 rounded-xl text-sm font-semibold hover:bg-slate-200 transition"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={confirmPendingUpdate}
+                className="px-4 py-2 bg-rose-600 text-white rounded-xl text-sm font-semibold hover:bg-rose-700 transition"
+              >
+                Continuar e Excluir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -116,6 +116,35 @@ export const PlanningView: React.FC<PlanningViewProps> = ({ projects, serviceExe
     if (!selectedProject) return [];
     const services = getAllServices(selectedProject);
     
+    // Pre-calculate tracking min dates to solve performance freeze
+    const trackingMinDateMap: { [key: string]: number } = {};
+    const projectTrackings = trackings.filter(t => t.projectId === selectedProjectId);
+
+    projectTrackings.forEach(t => {
+      const tTime = new Date(t.date).getTime();
+      if (isNaN(tTime)) return;
+      
+      const servicePaths = t.costStructureSelections || [];
+      const selections = t.selections || [];
+
+      servicePaths.forEach(s => {
+        selections.forEach(sel => {
+          const parts = sel.split('|');
+          const prefixes: string[] = [];
+          for (let i = 1; i <= parts.length; i++) {
+            prefixes.push(parts.slice(0, i).join('|'));
+          }
+
+          prefixes.forEach(prefix => {
+            const key = `${s}#${prefix}`;
+            if (!trackingMinDateMap[key] || tTime < trackingMinDateMap[key]) {
+              trackingMinDateMap[key] = tTime;
+            }
+          });
+        });
+      });
+    });
+
     const executions: ServiceExecution[] = [];
 
     services.forEach(service => {
@@ -158,7 +187,11 @@ export const PlanningView: React.FC<PlanningViewProps> = ({ projects, serviceExe
 
       componentPaths.forEach(compPath => {
         const existing = projectExecutions.find(e => e.servicePath === service.path && e.componentPath === compPath);
-        const realStart = getRealStartDate(service.path, compPath);
+        
+        // Fast Map Lookup instead of nested loop in getRealStartDate
+        const lookupKey = `${service.path}#${compPath}`;
+        const minTime = trackingMinDateMap[lookupKey];
+        const realStart = minTime ? new Date(minTime).toISOString().split('T')[0] : undefined;
         
         executions.push({
           id: existing?.id || generateId(),
@@ -175,7 +208,7 @@ export const PlanningView: React.FC<PlanningViewProps> = ({ projects, serviceExe
     });
 
     return executions;
-  }, [selectedProject, projectExecutions, trackings]);
+  }, [selectedProject, projectExecutions, trackings, selectedProjectId]);
 
   const countNonConformities = (ex: ServiceExecution) => {
     if (!ex.fvsResults) return 0;

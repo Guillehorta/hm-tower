@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Employee, Project, TimeLog, LaborTracking, ConstructionUnit, Block, Floor, Unit, LogType, ServiceExecution, Supplier } from '../types';
+import { Employee, Project, TimeLog, LaborTracking, ConstructionUnit, Block, Floor, Unit, LogType, ServiceExecution, Supplier, CostService } from '../types';
 import { generateId } from '../src/lib/utils';
 import { storageService } from '../services/storageService';
 
@@ -36,6 +36,8 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
 }) => {
   const [selectedProjectId, setSelectedProjectId] = useState<string>('');
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
+
+  const project = projects.find(p => p.id === selectedProjectId);
   
   // New selection state
   const [executorType, setExecutorType] = useState<'Colaborador' | 'Prestador de Serviço'>('Colaborador');
@@ -52,11 +54,135 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
   const componentDropdownRef = useRef<HTMLDivElement>(null);
   const executorDropdownRef = useRef<HTMLDivElement>(null);
 
+  const getServiceLinkedLevel = (path: string): string => {
+    if (!project || !project.costStructure) return 'none';
+    const parts = path.split('|');
+    const cc = project.costStructure.find(c => c.id === parts[0]);
+    const stage = cc?.stages?.find(s => s.id === parts[1]);
+    const ss = stage?.subStages?.find(s => s.id === parts[2]);
+    const sv = parts[3] ? ss?.services?.find(s => s.id === parts[3]) : null;
+    return sv?.linkedLevel || 'none';
+  };
+
+  const currentActiveLevel = currentServicePaths.length > 0 ? getServiceLinkedLevel(currentServicePaths[0]) : null;
+
+  const isServiceLevelCompatible = (path: string): boolean => {
+    if (!currentActiveLevel) return true;
+    return getServiceLinkedLevel(path) === currentActiveLevel;
+  };
+
   const changeDate = (days: number) => {
     const date = new Date(selectedDate + 'T00:00:00');
     date.setDate(date.getDate() + days);
     setSelectedDate(date.toISOString().split('T')[0]);
   };
+
+  useEffect(() => {
+    // Whenever currentServicePaths change, filter selectedComponentPaths to keep only those that are compatible with the currently selected services
+    if (currentServicePaths.length === 0) {
+      setSelectedComponentPaths([]);
+      return;
+    }
+
+    // Consolidate linked component IDs from all selected services
+    const servicesToCheck: CostService[] = [];
+    currentServicePaths.forEach(path => {
+      const parts = path.split('|');
+      const cc = project?.costStructure?.find(c => c.id === parts[0]);
+      if (!cc) return;
+      const stage = cc.stages?.find(s => s.id === parts[1]);
+      if (!stage) return;
+      const ss = stage.subStages?.find(s => s.id === parts[2]);
+      if (!ss) return;
+
+      if (parts[3]) {
+        const sv = ss.services?.find(s => s.id === parts[3]);
+        if (sv) servicesToCheck.push(sv);
+      }
+    });
+
+    const serviceConfigsWithLinks = servicesToCheck.filter(sv => sv.linkedComponentIds && sv.linkedComponentIds.length > 0);
+    let linkedIds: string[] = [];
+    let hasLinkedServices = false;
+    if (serviceConfigsWithLinks.length > 0) {
+      let intersectionSet = new Set<string>(serviceConfigsWithLinks[0].linkedComponentIds);
+      for (let i = 1; i < serviceConfigsWithLinks.length; i++) {
+        const nextSet = new Set<string>(serviceConfigsWithLinks[i].linkedComponentIds);
+        intersectionSet = new Set<string>([...intersectionSet].filter(id => nextSet.has(id)));
+      }
+      linkedIds = Array.from(intersectionSet);
+      hasLinkedServices = true;
+    }
+
+    const checkIsLinked = (id: string, type: 'cu' | 'b' | 'f' | 'u', item: any) => {
+      if (!hasLinkedServices) return true;
+      if (linkedIds.includes(id)) return true;
+      
+      if (type === 'cu') {
+        return item.blocks?.some((b: any) => 
+          linkedIds.includes(b.id) || 
+          b.floors?.some((f: any) => 
+            linkedIds.includes(f.id) || 
+            f.units?.some((u: any) => linkedIds.includes(u.id))
+          )
+        );
+      }
+      if (type === 'b') {
+        return item.floors?.some((f: any) => 
+          linkedIds.includes(f.id) || 
+          f.units?.some((u: any) => linkedIds.includes(u.id))
+        );
+      }
+      if (type === 'f') {
+        return item.units?.some((u: any) => linkedIds.includes(u.id));
+      }
+
+      for (const cu of project?.constructionUnits || []) {
+        if (linkedIds.includes(cu.id)) {
+          if (cu.id === id) return true;
+          if (cu.blocks?.some(b => b.id === id || b.floors?.some(f => f.id === id || f.units?.some(u => u.id === id)))) return true;
+        }
+        for (const b of cu.blocks || []) {
+          if (linkedIds.includes(b.id)) {
+            if (b.id === id) return true;
+            if (b.floors?.some(f => f.id === id || f.units?.some(u => u.id === id))) return true;
+          }
+          for (const f of b.floors || []) {
+            if (linkedIds.includes(f.id)) {
+              if (f.id === id) return true;
+              if (f.units?.some(u => u.id === id)) return true;
+            }
+          }
+        }
+      }
+      return false;
+    };
+
+    setSelectedComponentPaths(prev => {
+      return prev.filter(p => {
+        const parts = p.split('|');
+        if (!project) return false;
+        const cu = project.constructionUnits.find(u => u.id === parts[0]);
+        if (!cu) return false;
+        
+        const block = parts[1] ? cu.blocks?.find(b => b.id === parts[1]) : null;
+        const floor = parts[2] ? block?.floors?.find(f => f.id === parts[2]) : null;
+        const unit = parts[3] ? floor?.units?.find(u => u.id === parts[3]) : null;
+
+        // Check level compatibility
+        const compLevel = unit ? 'unit' : floor ? 'floor' : block ? 'block' : 'constructionUnit';
+        const currentActiveLevel = currentServicePaths.length > 0 ? getServiceLinkedLevel(currentServicePaths[0]) : null;
+        if (currentActiveLevel && currentActiveLevel !== 'none') {
+          if (compLevel !== currentActiveLevel) return false;
+        }
+
+        if (unit) return checkIsLinked(unit.id, 'u', unit);
+        if (floor) return checkIsLinked(floor.id, 'f', floor);
+        if (block) return checkIsLinked(block.id, 'b', block);
+        return checkIsLinked(cu.id, 'cu', cu);
+      });
+    });
+  }, [currentServicePaths, project]);
 
   useEffect(() => {
     // Auto-fill logic: if current day has no trackings, but previous day had trackings for services that are still in progress
@@ -123,8 +249,6 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
-
-  const project = projects.find(p => p.id === selectedProjectId);
   
   const currentDayTrackings = trackings.filter(t => t.projectId === selectedProjectId && t.date === selectedDate);
 
@@ -292,7 +416,6 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
       const paths: string[] = [];
       cc.stages?.forEach((st: any) => {
         st.subStages?.forEach((ss: any) => {
-          paths.push(`${cc.id}|${st.id}|${ss.id}`); // SubStage path
           ss.services?.forEach((sv: any) => {
             paths.push(`${cc.id}|${st.id}|${ss.id}|${sv.id}`);
           });
@@ -304,7 +427,6 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
     const getAllServicePathsInStage = (cc: any, st: any) => {
       const paths: string[] = [];
       st.subStages?.forEach((ss: any) => {
-        paths.push(`${cc.id}|${st.id}|${ss.id}`);
         ss.services?.forEach((sv: any) => {
           paths.push(`${cc.id}|${st.id}|${ss.id}|${sv.id}`);
         });
@@ -313,12 +435,17 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
     };
 
     const toggleMultiSelection = (paths: string[]) => {
-      const allSelected = paths.every(p => currentServicePaths.includes(p));
+      let activeLevel = currentActiveLevel;
+      if (!activeLevel && paths.length > 0) {
+        activeLevel = getServiceLinkedLevel(paths[0]);
+      }
+      const compatiblePaths = paths.filter(p => getServiceLinkedLevel(p) === activeLevel);
+      const allSelected = compatiblePaths.every(p => currentServicePaths.includes(p));
       if (allSelected) {
-        setCurrentServicePaths(prev => prev.filter(p => !paths.includes(p)));
+        setCurrentServicePaths(prev => prev.filter(p => !compatiblePaths.includes(p)));
       } else {
         const newPaths = [...currentServicePaths];
-        paths.forEach(p => {
+        compatiblePaths.forEach(p => {
           if (!newPaths.includes(p)) newPaths.push(p);
         });
         setCurrentServicePaths(newPaths);
@@ -334,7 +461,11 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
               onClick={() => {
                 const all: string[] = [];
                 project.costStructure?.forEach(cc => all.push(...getAllServicePathsInCC(cc)));
-                setCurrentServicePaths(all);
+                if (all.length > 0) {
+                  const targetLevel = getServiceLinkedLevel(all[0]);
+                  const compatible = all.filter(p => getServiceLinkedLevel(p) === targetLevel);
+                  setCurrentServicePaths(compatible);
+                }
               }}
               className="text-[9px] font-bold text-indigo-600 hover:underline"
             >
@@ -377,43 +508,52 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
                     </div>
                     <div className="pl-2 space-y-1 border-l border-slate-100">
                       {stage.subStages?.map(ss => {
-                        const ssPath = `${cc.id}|${stage.id}|${ss.id}`;
-                        const isSSSelected = currentServicePaths.includes(ssPath);
                         return (
-                          <div key={ss.id} className="space-y-1">
-                            <button 
-                              onClick={() => {
-                                if (isSSSelected) setCurrentServicePaths(prev => prev.filter(p => p !== ssPath));
-                                else setCurrentServicePaths([...currentServicePaths, ssPath]);
-                              }}
-                              className={`text-left w-full px-2 py-1 rounded text-[10px] font-medium transition-colors flex items-center gap-2 ${
-                                isSSSelected ? 'bg-indigo-500 text-white shadow-sm shadow-indigo-200' : 'text-slate-600 hover:bg-slate-50'
-                              }`}
-                            >
-                              <div className={`w-3 h-3 rounded flex items-center justify-center border ${isSSSelected ? 'bg-white border-white text-indigo-500' : 'bg-white border-slate-200'}`}>
-                                {isSSSelected && <i className="fas fa-check text-[8px]"></i>}
-                              </div>
+                          <div key={ss.id} className="space-y-1 mt-2 first:mt-0">
+                            <div className="text-[10px] font-semibold text-slate-700 bg-slate-50 px-2 py-1 rounded flex items-center gap-2 border border-slate-100">
+                              <i className="fas fa-folder-open text-amber-500 text-[8px]"></i>
                               {ss.name}
-                            </button>
+                            </div>
                             <div className="pl-2 grid grid-cols-1 gap-1">
                               {ss.services?.map(sv => {
                                 const path = `${cc.id}|${stage.id}|${ss.id}|${sv.id}`;
                                 const isSelected = currentServicePaths.includes(path);
+                                const isCompatible = isServiceLevelCompatible(path);
+                                const svLevel = getServiceLinkedLevel(path);
+                                const levelLabel = svLevel === 'constructionUnit' ? 'Unid. Construtiva' :
+                                                   svLevel === 'block' ? 'Bloco/Módulo' :
+                                                   svLevel === 'floor' ? 'Pavimento' :
+                                                   svLevel === 'unit' ? 'Unidade' : 'Sem nível';
                                 return (
                                   <button
                                     key={sv.id}
+                                    disabled={!isCompatible}
                                     onClick={() => {
                                       if (isSelected) setCurrentServicePaths(prev => prev.filter(p => p !== path));
                                       else setCurrentServicePaths([...currentServicePaths, path]);
                                     }}
-                                    className={`text-left px-2 py-1 rounded text-[10px] flex items-center gap-2 transition-colors ${
-                                      isSelected ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                                    className={`text-left px-2 py-1 rounded text-[10px] flex items-center justify-between gap-2 transition-all ${
+                                      isSelected 
+                                        ? 'bg-indigo-600 text-white shadow-sm' 
+                                        : !isCompatible 
+                                          ? 'bg-slate-100 text-slate-300 cursor-not-allowed opacity-50' 
+                                          : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
                                     }`}
+                                    title={!isCompatible ? `Incompatível: Requer nível EAP "${currentActiveLevel === 'constructionUnit' ? 'Unid. Construtiva' : currentActiveLevel === 'block' ? 'Bloco/Módulo' : currentActiveLevel === 'floor' ? 'Pavimento' : currentActiveLevel === 'unit' ? 'Unidade' : 'Sem nível'}"` : ''}
                                   >
-                                    <div className={`w-3 h-3 rounded flex items-center justify-center border ${isSelected ? 'bg-white border-white text-indigo-600' : 'bg-white border-slate-200'}`}>
-                                      {isSelected && <i className="fas fa-check text-[8px]"></i>}
+                                    <div className="flex items-center gap-2">
+                                      <div className={`w-3 h-3 rounded flex items-center justify-center border ${isSelected ? 'bg-white border-white text-indigo-600' : 'bg-white border-slate-200'}`}>
+                                        {isSelected && <i className="fas fa-check text-[8px]"></i>}
+                                      </div>
+                                      <span>{sv.name}</span>
                                     </div>
-                                    {sv.name}
+                                    <span className={`text-[8px] px-1.5 py-0.5 rounded font-bold uppercase ${
+                                      isSelected 
+                                        ? 'bg-indigo-700 text-indigo-150' 
+                                        : 'bg-slate-200 text-slate-500'
+                                    }`}>
+                                      {levelLabel}
+                                    </span>
                                   </button>
                                 );
                               })}
@@ -435,13 +575,35 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
   const renderComponentSelector = () => {
     if (!project || currentServicePaths.length === 0) return null;
 
-    // Find linked components for the selected service (using the first selected service as context)
-    const parts = currentServicePaths[0].split('|');
-    const cc = project.costStructure?.find(c => c.id === parts[0]);
-    const stage = cc?.stages.find(s => s.id === parts[1]);
-    const ss = stage?.subStages.find(s => s.id === parts[2]);
-    const sv = parts[3] ? ss?.services.find(s => s.id === parts[3]) : null;
-    const linkedIds = sv?.linkedComponentIds || [];
+    // Consolidate linked component IDs from all selected services with intersection logic
+    const servicesToCheck: CostService[] = [];
+    currentServicePaths.forEach(path => {
+      const parts = path.split('|');
+      const cc = project.costStructure?.find(c => c.id === parts[0]);
+      if (!cc) return;
+      const stage = cc.stages?.find(s => s.id === parts[1]);
+      if (!stage) return;
+      const ss = stage.subStages?.find(s => s.id === parts[2]);
+      if (!ss) return;
+
+      if (parts[3]) {
+        const sv = ss.services?.find(s => s.id === parts[3]);
+        if (sv) servicesToCheck.push(sv);
+      }
+    });
+
+    const serviceConfigsWithLinks = servicesToCheck.filter(sv => sv.linkedComponentIds && sv.linkedComponentIds.length > 0);
+    let linkedIds: string[] = [];
+    let hasLinkedServices = false;
+    if (serviceConfigsWithLinks.length > 0) {
+      let intersectionSet = new Set<string>(serviceConfigsWithLinks[0].linkedComponentIds);
+      for (let i = 1; i < serviceConfigsWithLinks.length; i++) {
+        const nextSet = new Set<string>(serviceConfigsWithLinks[i].linkedComponentIds);
+        intersectionSet = new Set<string>([...intersectionSet].filter(id => nextSet.has(id)));
+      }
+      linkedIds = Array.from(intersectionSet);
+      hasLinkedServices = true;
+    }
 
     const isLinked = (id: string, type: 'cu' | 'b' | 'f' | 'u', item: any) => {
       if (linkedIds.length === 0) return true;
@@ -490,6 +652,24 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
       return false;
     };
 
+    const activeLevel = currentActiveLevel || 'none';
+    const isCULevel = activeLevel === 'constructionUnit';
+    const isBLevel = activeLevel === 'block';
+    const isFLevel = activeLevel === 'floor';
+    const isULevel = activeLevel === 'unit';
+    const isNoneLevel = activeLevel === 'none';
+
+    // A level is selectable if it exactly matches the activeLevel, or if activeLevel is 'none'
+    const isCUSelectable = isCULevel || isNoneLevel;
+    const isBSelectableComp = isBLevel || isNoneLevel;
+    const isFSelectableComp = isFLevel || isNoneLevel;
+    const isUSelectableComp = isULevel || isNoneLevel;
+
+    // Deciding visibility of children
+    const showBlocks = isBLevel || isFLevel || isULevel || isNoneLevel;
+    const showFloors = isFLevel || isULevel || isNoneLevel;
+    const showUnits = isULevel || isNoneLevel;
+
     return (
       <div ref={componentDropdownRef} className="absolute z-50 mt-1 w-full bg-white border border-slate-200 rounded-xl shadow-2xl p-4 max-h-96 overflow-y-auto left-0 top-full">
         <div className="flex justify-between items-center mb-3">
@@ -499,28 +679,33 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
               onClick={() => {
                 const allPaths: string[] = [];
                 project.constructionUnits.forEach(cu => {
-                  if (getExecutionStatus(cu.id)) return;
-                  if (isLinked(cu.id, 'cu', cu) && (linkedIds.length === 0 || linkedIds.includes(cu.id))) {
+                  if (isCUSelectable && !getExecutionStatus(cu.id) && isLinked(cu.id, 'cu', cu) && (linkedIds.length === 0 || linkedIds.includes(cu.id))) {
                     allPaths.push(cu.id);
                   }
-                  cu.blocks?.forEach(b => {
-                    if (getExecutionStatus(`${cu.id}|${b.id}`)) return;
-                    if (isLinked(b.id, 'b', b) && (linkedIds.length === 0 || linkedIds.includes(b.id))) {
-                      allPaths.push(`${cu.id}|${b.id}`);
-                    }
-                    b.floors?.forEach(f => {
-                      if (getExecutionStatus(`${cu.id}|${b.id}|${f.id}`)) return;
-                      if (isLinked(f.id, 'f', f) && (linkedIds.length === 0 || linkedIds.includes(f.id))) {
-                        allPaths.push(`${cu.id}|${b.id}|${f.id}`);
+                  
+                  if (showBlocks) {
+                    cu.blocks?.forEach(b => {
+                      if (isBSelectableComp && !getExecutionStatus(`${cu.id}|${b.id}`) && isLinked(b.id, 'b', b) && (linkedIds.length === 0 || linkedIds.includes(b.id))) {
+                        allPaths.push(`${cu.id}|${b.id}`);
                       }
-                      f.units?.forEach(u => {
-                        if (getExecutionStatus(`${cu.id}|${b.id}|${f.id}|${u.id}`)) return;
-                        if (isLinked(u.id, 'u', u)) {
-                          allPaths.push(`${cu.id}|${b.id}|${f.id}|${u.id}`);
-                        }
-                      });
+                      
+                      if (showFloors) {
+                        b.floors?.forEach(f => {
+                          if (isFSelectableComp && !getExecutionStatus(`${cu.id}|${b.id}|${f.id}`) && isLinked(f.id, 'f', f) && (linkedIds.length === 0 || linkedIds.includes(f.id))) {
+                            allPaths.push(`${cu.id}|${b.id}|${f.id}`);
+                          }
+                          
+                          if (showUnits) {
+                            f.units?.forEach(u => {
+                              if (isUSelectableComp && !getExecutionStatus(`${cu.id}|${b.id}|${f.id}|${u.id}`) && isLinked(u.id, 'u', u)) {
+                                allPaths.push(`${cu.id}|${b.id}|${f.id}|${u.id}`);
+                              }
+                            });
+                          }
+                        });
+                      }
                     });
-                  });
+                  }
                 });
                 setSelectedComponentPaths(allPaths);
               }}
@@ -539,8 +724,8 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
         <div className="space-y-2">
           {project.constructionUnits?.filter(cu => isLinked(cu.id, 'cu', cu)).map(cu => {
             const cuPath = cu.id;
-            const isSelectable = linkedIds.length === 0 || linkedIds.includes(cu.id);
-            const status = getExecutionStatus(cuPath);
+            const isSelectable = isCUSelectable && (linkedIds.length === 0 || linkedIds.includes(cu.id));
+            const status = isSelectable ? getExecutionStatus(cuPath) : null;
             const isBlocked = !!status;
             const isSelected = selectedComponentPaths.includes(cuPath);
 
@@ -572,119 +757,125 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
                   <div className="font-bold text-[10px] text-indigo-600 uppercase px-2">{cu.name}</div>
                 )}
                 
-                <div className="pl-2 space-y-1 border-l border-slate-100">
-                  {cu.blocks?.filter(b => isLinked(b.id, 'b', b)).map(block => {
-                    const bPath = `${cu.id}|${block.id}`;
-                    const isBSelectable = linkedIds.length === 0 || linkedIds.includes(block.id);
-                    const bStatus = getExecutionStatus(bPath);
-                    const isBBlocked = !!bStatus;
-                    const isBSelected = selectedComponentPaths.includes(bPath);
+                {showBlocks && (
+                  <div className="pl-2 space-y-1 border-l border-slate-100">
+                    {cu.blocks?.filter(b => isLinked(b.id, 'b', b)).map(block => {
+                      const bPath = `${cu.id}|${block.id}`;
+                      const isBSelectable = isBSelectableComp && (linkedIds.length === 0 || linkedIds.includes(block.id));
+                      const bStatus = isBSelectable ? getExecutionStatus(bPath) : null;
+                      const isBBlocked = !!bStatus;
+                      const isBSelected = selectedComponentPaths.includes(bPath);
 
-                    return (
-                      <div key={block.id} className="space-y-1">
-                        {isBSelectable ? (
-                          <button
-                            onClick={() => { 
-                              if (!isBBlocked) { 
-                                if (isBSelected) setSelectedComponentPaths(selectedComponentPaths.filter(p => p !== bPath));
-                                else setSelectedComponentPaths([...selectedComponentPaths, bPath]);
-                              } 
-                            }}
-                            disabled={isBBlocked}
-                            className={`text-left w-full px-2 py-1 rounded text-[10px] font-semibold italic transition-colors flex justify-between items-center ${
-                              isBSelected ? 'bg-indigo-500 text-white' : 
-                              isBBlocked ? 'text-slate-300 cursor-not-allowed bg-slate-50' : 'text-slate-500 hover:bg-slate-50'
-                            }`}
-                          >
-                            <div className="flex items-center gap-2">
-                              <div className={`w-3 h-3 rounded flex items-center justify-center border ${isBSelected ? 'bg-white border-white' : 'bg-white border-slate-200'}`}>
-                                {isBSelected && <i className="fas fa-check text-indigo-500 text-[8px]"></i>}
+                      return (
+                        <div key={block.id} className="space-y-1">
+                          {isBSelectable ? (
+                            <button
+                              onClick={() => { 
+                                if (!isBBlocked) { 
+                                  if (isBSelected) setSelectedComponentPaths(selectedComponentPaths.filter(p => p !== bPath));
+                                  else setSelectedComponentPaths([...selectedComponentPaths, bPath]);
+                                } 
+                              }}
+                              disabled={isBBlocked}
+                              className={`text-left w-full px-2 py-1 rounded text-[10px] font-semibold italic transition-colors flex justify-between items-center ${
+                                isBSelected ? 'bg-indigo-500 text-white' : 
+                                isBBlocked ? 'text-slate-300 cursor-not-allowed bg-slate-50' : 'text-slate-500 hover:bg-slate-50'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2">
+                                <div className={`w-3 h-3 rounded flex items-center justify-center border ${isBSelected ? 'bg-white border-white' : 'bg-white border-slate-200'}`}>
+                                  {isBSelected && <i className="fas fa-check text-indigo-500 text-[8px]"></i>}
+                                </div>
+                                <span>{block.name}</span>
                               </div>
-                              <span>{block.name}</span>
-                            </div>
-                            {bStatus && <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded ${bStatus === 'Concluído' ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>{bStatus}</span>}
-                          </button>
-                        ) : (
-                          <div className="text-[10px] font-semibold text-slate-500 italic px-2">{block.name}</div>
-                        )}
+                              {bStatus && <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded ${bStatus === 'Concluído' ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>{bStatus}</span>}
+                            </button>
+                          ) : (
+                            <div className="text-[10px] font-semibold text-slate-500 italic px-2">{block.name}</div>
+                          )}
 
-                        <div className="pl-2 space-y-1 border-l border-slate-100">
-                          {block.floors?.filter(f => isLinked(f.id, 'f', f)).map(floor => {
-                            const fPath = `${cu.id}|${block.id}|${floor.id}`;
-                            const isFSelectable = linkedIds.length === 0 || linkedIds.includes(floor.id);
-                            const fStatus = getExecutionStatus(fPath);
-                            const isFBlocked = !!fStatus;
-                            const isFSelected = selectedComponentPaths.includes(fPath);
+                          {showFloors && (
+                            <div className="pl-2 space-y-1 border-l border-slate-100">
+                              {block.floors?.filter(f => isLinked(f.id, 'f', f)).map(floor => {
+                                const fPath = `${cu.id}|${block.id}|${floor.id}`;
+                                const isFSelectable = isFSelectableComp && (linkedIds.length === 0 || linkedIds.includes(floor.id));
+                                const fStatus = isFSelectable ? getExecutionStatus(fPath) : null;
+                                const isFBlocked = !!fStatus;
+                                const isFSelected = selectedComponentPaths.includes(fPath);
 
-                            return (
-                              <div key={floor.id} className="space-y-1">
-                                {isFSelectable ? (
-                                  <button
-                                    onClick={() => { 
-                                      if (!isFBlocked) { 
-                                        if (isFSelected) setSelectedComponentPaths(selectedComponentPaths.filter(p => p !== fPath));
-                                        else setSelectedComponentPaths([...selectedComponentPaths, fPath]);
-                                      } 
-                                    }}
-                                    disabled={isFBlocked}
-                                    className={`text-left w-full px-2 py-1 rounded text-[10px] font-medium transition-colors flex justify-between items-center ${
-                                      isFSelected ? 'bg-indigo-500 text-white' : 
-                                      isFBlocked ? 'text-slate-200 cursor-not-allowed bg-slate-50' : 'text-slate-400 hover:bg-slate-50'
-                                    }`}
-                                  >
-                                    <div className="flex items-center gap-2">
-                                      <div className={`w-3 h-3 rounded flex items-center justify-center border ${isFSelected ? 'bg-white border-white' : 'bg-white border-slate-200'}`}>
-                                        {isFSelected && <i className="fas fa-check text-indigo-500 text-[8px]"></i>}
-                                      </div>
-                                      <span>{floor.name}</span>
-                                    </div>
-                                    {fStatus && <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded ${fStatus === 'Concluído' ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>{fStatus}</span>}
-                                  </button>
-                                ) : (
-                                  <div className="text-[10px] font-medium text-slate-400 px-2">{floor.name}</div>
-                                )}
-
-                                <div className="pl-2 grid grid-cols-1 gap-1">
-                                  {floor.units?.filter(u => isLinked(u.id, 'u', u)).map(unit => {
-                                    const path = `${cu.id}|${block.id}|${floor.id}|${unit.id}`;
-                                    const uStatus = getExecutionStatus(path);
-                                    const isUBlocked = !!uStatus;
-                                    const isUSelected = selectedComponentPaths.includes(path);
-
-                                    return (
+                                return (
+                                  <div key={floor.id} className="space-y-1">
+                                    {isFSelectable ? (
                                       <button
-                                        key={unit.id}
                                         onClick={() => { 
-                                          if (!isUBlocked) { 
-                                            if (isUSelected) setSelectedComponentPaths(selectedComponentPaths.filter(p => p !== path));
-                                            else setSelectedComponentPaths([...selectedComponentPaths, path]);
+                                          if (!isFBlocked) { 
+                                            if (isFSelected) setSelectedComponentPaths(selectedComponentPaths.filter(p => p !== fPath));
+                                            else setSelectedComponentPaths([...selectedComponentPaths, fPath]);
                                           } 
                                         }}
-                                        disabled={isUBlocked}
-                                        className={`text-left px-2 py-1 rounded text-[10px] transition-colors flex justify-between items-center ${
-                                          isUSelected ? 'bg-indigo-500 text-white' : 
-                                          isUBlocked ? 'text-slate-300 cursor-not-allowed bg-slate-50' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                                        disabled={isFBlocked}
+                                        className={`text-left w-full px-2 py-1 rounded text-[10px] font-medium transition-colors flex justify-between items-center ${
+                                          isFSelected ? 'bg-indigo-500 text-white' : 
+                                          isFBlocked ? 'text-slate-200 cursor-not-allowed bg-slate-50' : 'text-slate-400 hover:bg-slate-50'
                                         }`}
                                       >
                                         <div className="flex items-center gap-2">
-                                          <div className={`w-3 h-3 rounded flex items-center justify-center border ${isUSelected ? 'bg-white border-white' : 'bg-white border-slate-200'}`}>
-                                            {isUSelected && <i className="fas fa-check text-indigo-500 text-[8px]"></i>}
+                                          <div className={`w-3 h-3 rounded flex items-center justify-center border ${isFSelected ? 'bg-white border-white' : 'bg-white border-slate-200'}`}>
+                                            {isFSelected && <i className="fas fa-check text-indigo-500 text-[8px]"></i>}
                                           </div>
-                                          <span>{unit.name}</span>
+                                          <span>{floor.name}</span>
                                         </div>
-                                        {uStatus && <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded ${uStatus === 'Concluído' ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>{uStatus}</span>}
+                                        {fStatus && <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded ${fStatus === 'Concluído' ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>{fStatus}</span>}
                                       </button>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            );
-                          })}
+                                    ) : (
+                                      <div className="text-[10px] font-medium text-slate-400 px-2">{floor.name}</div>
+                                    )}
+
+                                    {showUnits && (
+                                      <div className="pl-2 grid grid-cols-1 gap-1">
+                                        {floor.units?.filter(u => isLinked(u.id, 'u', u)).map(unit => {
+                                          const path = `${cu.id}|${block.id}|${floor.id}|${unit.id}`;
+                                          const uStatus = getExecutionStatus(path);
+                                          const isUBlocked = !!uStatus;
+                                          const isUSelected = selectedComponentPaths.includes(path);
+
+                                          return (
+                                            <button
+                                              key={unit.id}
+                                              onClick={() => { 
+                                                if (!isUBlocked) { 
+                                                  if (isUSelected) setSelectedComponentPaths(selectedComponentPaths.filter(p => p !== path));
+                                                  else setSelectedComponentPaths([...selectedComponentPaths, path]);
+                                                } 
+                                              }}
+                                              disabled={isUBlocked}
+                                              className={`text-left px-2 py-1 rounded text-[10px] transition-colors flex justify-between items-center ${
+                                                isUSelected ? 'bg-indigo-500 text-white' : 
+                                                isUBlocked ? 'text-slate-300 cursor-not-allowed bg-slate-50' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                                              }`}
+                                            >
+                                              <div className="flex items-center gap-2">
+                                                <div className={`w-3 h-3 rounded flex items-center justify-center border ${isUSelected ? 'bg-white border-white' : 'bg-white border-slate-200'}`}>
+                                                  {isUSelected && <i className="fas fa-check text-indigo-500 text-[8px]"></i>}
+                                                </div>
+                                                <span>{unit.name}</span>
+                                              </div>
+                                              {uStatus && <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded ${uStatus === 'Concluído' ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'}`}>{uStatus}</span>}
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             );
           })}

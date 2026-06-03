@@ -1759,8 +1759,15 @@ const App: React.FC = () => {
                             {currentUser.role === UserRole.ADMIN && (
                               <button 
                                 onClick={() => {
-                                  storageService.deleteCompany(comp.id);
-                                  setCompanies(prev => prev.filter(c => c.id !== comp.id));
+                                  setConfirmModal({
+                                    isOpen: true,
+                                    title: "Confirmar Exclusão",
+                                    message: `Tem certeza que deseja excluir a empresa ${comp.name}? Esta ação não pode ser desfeita.`,
+                                    onConfirm: () => {
+                                      storageService.deleteCompany(comp.id);
+                                      setCompanies(prev => prev.filter(c => c.id !== comp.id));
+                                    }
+                                  });
                                 }}
                                 className="w-8 h-8 rounded-full bg-white text-slate-300 hover:text-rose-500 hover:bg-rose-50 flex items-center justify-center transition-all opacity-0 group-hover:opacity-100 shadow-sm"
                               >
@@ -2160,8 +2167,15 @@ const App: React.FC = () => {
                             </button>
                             <button 
                               onClick={() => {
-                                storageService.deleteJobFunction(jf.id);
-                                setJobFunctions(prev => prev.filter(f => f.id !== jf.id));
+                                setConfirmModal({
+                                  isOpen: true,
+                                  title: "Confirmar Exclusão",
+                                  message: `Tem certeza que deseja excluir a função ${jf.name}? Esta ação não pode ser desfeita.`,
+                                  onConfirm: () => {
+                                    storageService.deleteJobFunction(jf.id);
+                                    setJobFunctions(prev => prev.filter(f => f.id !== jf.id));
+                                  }
+                                });
                               }}
                               className="w-8 h-8 rounded-full bg-white text-slate-300 hover:text-rose-500 hover:bg-rose-50 flex items-center justify-center transition-all"
                             >
