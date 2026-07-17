@@ -872,15 +872,122 @@ const App: React.FC = () => {
   };
 
   const handleSaveTracking = (tracking: LaborTracking) => {
+    setTrackings(prev => {
+      const idx = prev.findIndex(t => t.id === tracking.id);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = tracking;
+        return next;
+      }
+      return [...prev, tracking];
+    });
     storageService.saveLaborTracking(tracking);
   };
 
   const handleSaveTrackings = (newTrackings: LaborTracking[]) => {
+    setTrackings(prev => {
+      const next = [...prev];
+      newTrackings.forEach(t => {
+        const idx = next.findIndex(x => x.id === t.id);
+        if (idx >= 0) {
+          next[idx] = t;
+        } else {
+          next.push(t);
+        }
+      });
+      return next;
+    });
     storageService.saveLaborTrackings(newTrackings);
   };
 
   const handleDeleteTrackings = (ids: string[]) => {
+    // 1. Find deleted trackings in the current state to know their service/component paths
+    const deletedTrackings = trackings.filter(t => ids.includes(t.id));
+    
+    // 2. Perform the deletion of labor trackings
     storageService.deleteLaborTrackings(ids);
+    setTrackings(prev => prev.filter(t => !ids.includes(t.id)));
+    
+    // 3. Clean up corresponding ServiceExecution documents if no trackings remain
+    const processedKeys = new Set<string>();
+    const executionsToDelete: string[] = [];
+    const executionsToUpdate: ServiceExecution[] = [];
+    
+    deletedTrackings.forEach(t => {
+      const pId = t.projectId;
+      const sPaths = t.costStructureSelections || [];
+      const selections = t.selections || [];
+      
+      if (!pId) return;
+      
+      sPaths.forEach(sPath => {
+        selections.forEach(sel => {
+          const parts = sel.split('|');
+          const prefixes: string[] = [];
+          for (let i = 1; i <= parts.length; i++) {
+            prefixes.push(parts.slice(0, i).join('|'));
+          }
+          
+          prefixes.forEach(prefix => {
+            const comboKey = `${pId}|${sPath}|${prefix}`;
+            if (processedKeys.has(comboKey)) return;
+            processedKeys.add(comboKey);
+            
+            // Check if there are any remaining trackings for this combination
+            const hasRemaining = trackings.some(rem => 
+              !ids.includes(rem.id) &&
+              rem.projectId === pId &&
+              rem.costStructureSelections?.includes(sPath) &&
+              rem.selections?.some(remSel => remSel === prefix || remSel.startsWith(prefix + '|'))
+            );
+            
+            if (!hasRemaining) {
+              // Find corresponding ServiceExecution
+              const existingExec = serviceExecutions.find(ex => 
+                ex.projectId === pId &&
+                ex.servicePath === sPath &&
+                ex.componentPath === prefix
+              );
+              
+              if (existingExec) {
+                const hasPlannedDates = !!(existingExec.startDatePlanned || existingExec.endDatePlanned);
+                const hasFvs = !!(existingExec.fvsResults && Object.keys(existingExec.fvsResults).length > 0);
+                
+                if (hasPlannedDates || hasFvs) {
+                  // Keep the execution but clear real start/end dates
+                  const updatedExec = { ...existingExec };
+                  delete updatedExec.startDateReal;
+                  delete updatedExec.endDateReal;
+                  executionsToUpdate.push(updatedExec);
+                  storageService.saveServiceExecution(updatedExec);
+                } else {
+                  // Delete the execution completely
+                  executionsToDelete.push(existingExec.id);
+                  storageService.deleteServiceExecutions([existingExec.id]);
+                }
+              }
+            }
+          });
+        });
+      });
+    });
+    
+    // Synchronously update serviceExecutions state
+    if (executionsToDelete.length > 0 || executionsToUpdate.length > 0) {
+      setServiceExecutions(prev => {
+        let updated = prev;
+        if (executionsToDelete.length > 0) {
+          updated = updated.filter(ex => !executionsToDelete.includes(ex.id));
+        }
+        if (executionsToUpdate.length > 0) {
+          updated = updated.map(ex => {
+            const match = executionsToUpdate.find(up => up.id === ex.id);
+            return match ? match : ex;
+          });
+        }
+        return updated;
+      });
+    }
   };
 
   const handleSaveMeasurement = (measurement: DailyMeasurement) => {

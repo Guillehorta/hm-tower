@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Employee, Project, TimeLog, LaborTracking, ConstructionUnit, Block, Floor, Unit, LogType, ServiceExecution, Supplier, CostService } from '../types';
 import { generateId } from '../src/lib/utils';
 import { storageService } from '../services/storageService';
+import { LaborDeleteConfirmModal } from './LaborDeleteConfirmModal';
 
 interface LaborTrackingProps {
   employees: Employee[];
@@ -36,6 +37,7 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
 }) => {
   const [selectedProjectId, setSelectedProjectId] = useState<string>('');
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [deleteTarget, setDeleteTarget] = useState<{ servicePath: string, componentPath: string, executorType: 'Colaborador' | 'Prestador de Serviço' } | null>(null);
 
   const project = projects.find(p => p.id === selectedProjectId);
   
@@ -347,12 +349,37 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
     }
   };
 
-  const handleDeleteEntry = (servicePath: string, componentPath: string, eType: 'Colaborador' | 'Prestador de Serviço') => {
-    const idsToDelete = currentDayTrackings
-      .filter(t => t.costStructureSelections?.[0] === servicePath && t.selections?.[0] === componentPath && (t.executorType || 'Colaborador') === eType)
+  const handleDeleteAllDays = (servicePath: string, componentPath: string, eType: 'Colaborador' | 'Prestador de Serviço') => {
+    const idsToDelete = trackings
+      .filter(t => 
+        t.projectId === selectedProjectId &&
+        t.costStructureSelections?.[0] === servicePath && 
+        t.selections?.[0] === componentPath && 
+        (t.executorType || 'Colaborador') === eType
+      )
       .map(t => t.id);
     
-    onDeleteMany(idsToDelete);
+    if (idsToDelete.length > 0) {
+      onDeleteMany(idsToDelete);
+      onFeedback?.('success', `${idsToDelete.length} apontamento(s) excluído(s) de todos os dias.`);
+    }
+  };
+
+  const handleDeleteFromToday = (servicePath: string, componentPath: string, eType: 'Colaborador' | 'Prestador de Serviço') => {
+    const idsToDelete = trackings
+      .filter(t => 
+        t.projectId === selectedProjectId &&
+        t.costStructureSelections?.[0] === servicePath && 
+        t.selections?.[0] === componentPath && 
+        (t.executorType || 'Colaborador') === eType &&
+        t.date >= selectedDate
+      )
+      .map(t => t.id);
+    
+    if (idsToDelete.length > 0) {
+      onDeleteMany(idsToDelete);
+      onFeedback?.('success', `${idsToDelete.length} apontamento(s) excluído(s) deste dia em diante.`);
+    }
   };
 
   const getServiceName = (path: string) => {
@@ -1178,14 +1205,13 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
                     </td>
                     <td className="px-6 py-4 text-center">
                       <button 
+                        id={`delete-labor-btn-${idx}`}
                         onClick={() => {
-                          if (onConfirm) {
-                            onConfirm(
-                              "Confirmar Exclusão",
-                              "Deseja excluir este apontamento?",
-                              () => handleDeleteEntry(entry.servicePath, entry.componentPath, entry.executorType)
-                            );
-                          }
+                          setDeleteTarget({
+                            servicePath: entry.servicePath,
+                            componentPath: entry.componentPath,
+                            executorType: entry.executorType
+                          });
                         }}
                         className="text-slate-300 hover:text-rose-500 transition-colors"
                       >
@@ -1212,6 +1238,15 @@ export const LaborTrackingView: React.FC<LaborTrackingProps> = ({
           </div>
           <p className="text-slate-500 font-medium italic">Selecione uma obra para visualizar o apontamento de mão-de-obra.</p>
         </div>
+      )}
+      {deleteTarget && (
+        <LaborDeleteConfirmModal
+          isOpen={!!deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+          onConfirmAllDays={() => handleDeleteAllDays(deleteTarget.servicePath, deleteTarget.componentPath, deleteTarget.executorType)}
+          onConfirmFromToday={() => handleDeleteFromToday(deleteTarget.servicePath, deleteTarget.componentPath, deleteTarget.executorType)}
+          selectedDate={selectedDate}
+        />
       )}
     </div>
   );

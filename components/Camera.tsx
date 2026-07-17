@@ -13,16 +13,29 @@ export const Camera: React.FC<CameraProps> = ({ onCapture, isLoading }) => {
   const [error, setError] = useState<string | null>(null);
 
   const startCamera = useCallback(async () => {
+    setError(null);
     try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { 
-          facingMode: 'user', 
-          width: { ideal: 480 }, 
-          height: { ideal: 640 },
-          aspectRatio: { ideal: 0.75 }
-        },
-        audio: false
-      });
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error("Dispositivo de câmera não disponível ou não suportado pelo navegador.");
+      }
+      let mediaStream: MediaStream;
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: { 
+            facingMode: 'user', 
+            width: { ideal: 480 }, 
+            height: { ideal: 640 },
+            aspectRatio: { ideal: 0.75 }
+          },
+          audio: false
+        });
+      } catch (firstErr) {
+        console.warn("Could not load camera with ideal constraints, trying basic video constraints...", firstErr);
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false
+        });
+      }
       setStream(mediaStream);
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
@@ -31,10 +44,12 @@ export const Camera: React.FC<CameraProps> = ({ onCapture, isLoading }) => {
       let msg = "Não foi possível acessar a câmera.";
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
         msg = "Permissão da câmera negada. Por favor, habilite o acesso à câmera nas configurações do seu navegador.";
-      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-        msg = "Nenhuma câmera encontrada no dispositivo.";
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError' || err.message?.includes('Requested device not found')) {
+        msg = "Nenhuma câmera encontrada no dispositivo. Por favor, faça o upload de um arquivo de foto.";
       } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
         msg = "A câmera está sendo usada por outro aplicativo.";
+      } else if (err.message) {
+        msg = err.message;
       }
       setError(msg);
       console.error(err);
@@ -49,6 +64,19 @@ export const Camera: React.FC<CameraProps> = ({ onCapture, isLoading }) => {
       }
     };
   }, [startCamera]);
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        if (typeof reader.result === 'string') {
+          onCapture(reader.result);
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
 
   const capture = () => {
     if (videoRef.current && canvasRef.current) {
@@ -70,16 +98,40 @@ export const Camera: React.FC<CameraProps> = ({ onCapture, isLoading }) => {
       {error ? (
         <div className="flex flex-col items-center justify-center h-full p-6 text-center text-white bg-slate-800">
           <i className="fas fa-exclamation-triangle text-4xl mb-4 text-amber-500"></i>
-          <p>{error}</p>
-          <button 
-            onClick={startCamera}
-            className="mt-4 px-4 py-2 bg-indigo-600 rounded-lg hover:bg-indigo-700 transition"
-          >
-            Tentar Novamente
-          </button>
+          <p className="text-sm mb-4">{error}</p>
+          <div className="flex flex-col gap-2 w-full max-w-[200px]">
+            <button 
+              onClick={startCamera}
+              className="px-4 py-2 bg-indigo-600 rounded-lg hover:bg-indigo-700 transition font-bold text-xs"
+            >
+              Tentar Novamente
+            </button>
+            <label className="px-4 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition cursor-pointer flex items-center justify-center gap-2 text-xs font-bold">
+              <i className="fas fa-upload"></i>
+              Enviar Arquivo
+              <input 
+                type="file" 
+                accept="image/*" 
+                onChange={handleFileUpload} 
+                className="hidden" 
+              />
+            </label>
+          </div>
         </div>
       ) : (
         <>
+          <div className="absolute top-4 right-4 z-10">
+            <label className="w-10 h-10 bg-black/60 hover:bg-black/80 text-white rounded-full flex items-center justify-center transition cursor-pointer shadow-lg backdrop-blur" title="Enviar Arquivo de Imagem">
+              <i className="fas fa-upload text-sm"></i>
+              <input 
+                type="file" 
+                accept="image/*" 
+                onChange={handleFileUpload} 
+                className="hidden" 
+              />
+            </label>
+          </div>
+
           <video 
             ref={videoRef} 
             autoPlay 

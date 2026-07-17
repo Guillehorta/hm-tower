@@ -22,6 +22,9 @@ export const PlanningView: React.FC<PlanningViewProps> = ({ projects, serviceExe
   const [selectedUnitForModal, setSelectedUnitForModal] = useState<{ unit: Unit; path: string } | null>(null);
   const [selectedExecutionForFvs, setSelectedExecutionForFvs] = useState<ServiceExecution | null>(null);
   const [selectedExecutionForDetails, setSelectedExecutionForDetails] = useState<ServiceExecution | null>(null);
+  const [editingRealId, setEditingRealId] = useState<string | null>(null);
+  const [editStartDateReal, setEditStartDateReal] = useState<string>('');
+  const [editEndDateReal, setEditEndDateReal] = useState<string>('');
 
   const selectedProject = useMemo(() => 
     projects.find(p => p.id === selectedProjectId),
@@ -41,6 +44,16 @@ export const PlanningView: React.FC<PlanningViewProps> = ({ projects, serviceExe
     const diffTime = e.getTime() - s.getTime();
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
     return Math.max(0, diffDays + 1);
+  };
+
+  const formatDateBR = (dateStr?: string) => {
+    if (!dateStr) return '-';
+    const isoPart = dateStr.split('T')[0];
+    const parts = isoPart.split('-');
+    if (parts.length === 3) {
+      return `${parts[2]}/${parts[1]}/${parts[0]}`;
+    }
+    return dateStr;
   };
 
   const getRealStartDate = (servicePath: string, componentPath: string) => {
@@ -200,7 +213,7 @@ export const PlanningView: React.FC<PlanningViewProps> = ({ projects, serviceExe
           componentPath: compPath,
           startDatePlanned: existing?.startDatePlanned,
           endDatePlanned: existing?.endDatePlanned,
-          startDateReal: realStart || existing?.startDateReal,
+          startDateReal: existing?.startDateReal || realStart,
           endDateReal: existing?.endDateReal,
           fvsResults: existing?.fvsResults
         });
@@ -371,63 +384,127 @@ export const PlanningView: React.FC<PlanningViewProps> = ({ projects, serviceExe
                   )}
                   {showReal && (
                     <>
-                      <td className="px-4 py-4 text-xs text-slate-600">
-                        {ex.startDateReal ? new Date(ex.startDateReal).toLocaleDateString('pt-BR') : '-'}
+                      <td className="px-4 py-4">
+                        {editingRealId === ex.id ? (
+                          <input 
+                            type="date" 
+                            value={editStartDateReal} 
+                            onChange={(e) => setEditStartDateReal(e.target.value)}
+                            className="text-xs border border-slate-200 rounded px-2 py-1 outline-none focus:ring-1 focus:ring-indigo-500 bg-white"
+                          />
+                        ) : (
+                          <span className="text-xs text-slate-600">{formatDateBR(ex.startDateReal)}</span>
+                        )}
                       </td>
-                      <td className="px-4 py-4 text-xs text-slate-600">
-                        {ex.endDateReal ? new Date(ex.endDateReal).toLocaleDateString('pt-BR') : '-'}
+                      <td className="px-4 py-4">
+                        {editingRealId === ex.id ? (
+                          <input 
+                            type="date" 
+                            value={editEndDateReal} 
+                            onChange={(e) => setEditEndDateReal(e.target.value)}
+                            className="text-xs border border-slate-200 rounded px-2 py-1 outline-none focus:ring-1 focus:ring-indigo-500 bg-white"
+                          />
+                        ) : (
+                          <span className="text-xs text-slate-600">{formatDateBR(ex.endDateReal)}</span>
+                        )}
                       </td>
                       <td className="px-4 py-4 text-xs font-medium text-slate-600">
-                        {calculateDuration(ex.startDateReal, ex.endDateReal)} dias
+                        {editingRealId === ex.id ? (
+                          <span>{calculateDuration(editStartDateReal, editEndDateReal)} dias</span>
+                        ) : (
+                          <span>{calculateDuration(ex.startDateReal, ex.endDateReal)} dias</span>
+                        )}
                       </td>
                     </>
                   )}
                   <td className="px-6 py-4 text-right">
                     <div className="flex justify-end gap-2 items-center">
-                      {activeTab === 'completed' && (
+                      {editingRealId === ex.id ? (
                         <>
-                          {service.isControlled && (
-                            <button 
-                              onClick={() => setSelectedExecutionForFvs(ex)}
-                              className={`text-[10px] font-bold px-2 py-1 rounded-full transition-colors ${
-                                countNonConformities(ex) > 0 
-                                  ? 'bg-rose-100 text-rose-600 hover:bg-rose-200' 
-                                  : 'bg-emerald-100 text-emerald-600 hover:bg-emerald-200'
-                              }`}
-                            >
-                              <i className="fas fa-exclamation-triangle mr-1"></i>
-                              {countNonConformities(ex)} NCs
-                            </button>
-                          )}
-                          <button 
-                            onClick={() => setSelectedExecutionForDetails(ex)}
-                            title="Visualizar Detalhes"
-                            className="w-8 h-8 bg-slate-100 text-slate-600 rounded-lg flex items-center justify-center hover:bg-slate-200 transition-colors"
+                          <button
+                            id={`save-real-btn-${ex.id}`}
+                            onClick={() => {
+                              updateExecution({
+                                ...ex,
+                                startDateReal: editStartDateReal || undefined,
+                                endDateReal: editEndDateReal || undefined
+                              });
+                              setEditingRealId(null);
+                            }}
+                            title="Salvar Alterações"
+                            className="w-8 h-8 bg-emerald-50 text-emerald-600 rounded-lg flex items-center justify-center hover:bg-emerald-100 transition-colors"
                           >
-                            <i className="fas fa-info-circle"></i>
+                            <i className="fas fa-check"></i>
+                          </button>
+                          <button
+                            id={`cancel-real-btn-${ex.id}`}
+                            onClick={() => setEditingRealId(null)}
+                            title="Cancelar"
+                            className="w-8 h-8 bg-rose-50 text-rose-600 rounded-lg flex items-center justify-center hover:bg-rose-100 transition-colors"
+                          >
+                            <i className="fas fa-times"></i>
                           </button>
                         </>
-                      )}
-                      {activeTab === 'ongoing' && (
+                      ) : (
                         <>
-                          {service.isControlled && (
-                            <button 
-                              onClick={() => setSelectedExecutionForFvs(ex)}
-                              title="Acessar FVS"
-                              className="w-8 h-8 bg-indigo-50 text-indigo-600 rounded-lg flex items-center justify-center hover:bg-indigo-100 transition-colors"
-                            >
-                              <i className="fas fa-clipboard-check"></i>
-                            </button>
+                          {activeTab === 'completed' && (
+                            <>
+                              {service.isControlled && (
+                                <button 
+                                  onClick={() => setSelectedExecutionForFvs(ex)}
+                                  className={`text-[10px] font-bold px-2 py-1 rounded-full transition-colors ${
+                                    countNonConformities(ex) > 0 
+                                      ? 'bg-rose-100 text-rose-600 hover:bg-rose-200' 
+                                      : 'bg-emerald-100 text-emerald-600 hover:bg-emerald-200'
+                                  }`}
+                                >
+                                  <i className="fas fa-exclamation-triangle mr-1"></i>
+                                  {countNonConformities(ex)} NCs
+                                </button>
+                              )}
+                              <button 
+                                id={`edit-real-btn-${ex.id}`}
+                                onClick={() => {
+                                  setEditingRealId(ex.id);
+                                  setEditStartDateReal(ex.startDateReal || '');
+                                  setEditEndDateReal(ex.endDateReal || '');
+                                }}
+                                title="Editar Datas Reais"
+                                className="w-8 h-8 bg-indigo-50 text-indigo-600 rounded-lg flex items-center justify-center hover:bg-indigo-100 transition-colors"
+                              >
+                                <i className="fas fa-edit"></i>
+                              </button>
+                              <button 
+                                onClick={() => setSelectedExecutionForDetails(ex)}
+                                title="Visualizar Detalhes"
+                                className="w-8 h-8 bg-slate-100 text-slate-600 rounded-lg flex items-center justify-center hover:bg-slate-200 transition-colors"
+                              >
+                                <i className="fas fa-info-circle"></i>
+                              </button>
+                            </>
                           )}
-                          <button 
-                            onClick={() => {
-                              updateExecution({ ...ex, endDateReal: new Date().toISOString().split('T')[0] });
-                              onFeedback?.('success', 'Serviço concluído com sucesso.');
-                            }}
-                            className="px-3 py-1 bg-emerald-500 text-white text-[10px] font-bold rounded-lg hover:bg-emerald-600 transition-colors"
-                          >
-                            Concluir
-                          </button>
+                          {activeTab === 'ongoing' && (
+                            <>
+                              {service.isControlled && (
+                                <button 
+                                  onClick={() => setSelectedExecutionForFvs(ex)}
+                                  title="Acessar FVS"
+                                  className="w-8 h-8 bg-indigo-50 text-indigo-600 rounded-lg flex items-center justify-center hover:bg-indigo-100 transition-colors"
+                                >
+                                  <i className="fas fa-clipboard-check"></i>
+                                </button>
+                              )}
+                              <button 
+                                onClick={() => {
+                                  updateExecution({ ...ex, endDateReal: new Date().toISOString().split('T')[0] });
+                                  onFeedback?.('success', 'Serviço concluído com sucesso.');
+                                }}
+                                className="px-3 py-1 bg-emerald-500 text-white text-[10px] font-bold rounded-lg hover:bg-emerald-600 transition-colors"
+                              >
+                                Concluir
+                              </button>
+                            </>
+                          )}
                         </>
                       )}
                     </div>
@@ -796,11 +873,11 @@ export const PlanningView: React.FC<PlanningViewProps> = ({ projects, serviceExe
                   <div className="grid grid-cols-1 gap-3">
                     <div className="flex justify-between items-center text-sm">
                       <span className="text-slate-500">Início:</span>
-                      <span className="font-bold text-slate-700">{selectedExecutionForDetails.startDatePlanned ? new Date(selectedExecutionForDetails.startDatePlanned).toLocaleDateString('pt-BR') : '-'}</span>
+                      <span className="font-bold text-slate-700">{formatDateBR(selectedExecutionForDetails.startDatePlanned)}</span>
                     </div>
                     <div className="flex justify-between items-center text-sm">
                       <span className="text-slate-500">Fim:</span>
-                      <span className="font-bold text-slate-700">{selectedExecutionForDetails.endDatePlanned ? new Date(selectedExecutionForDetails.endDatePlanned).toLocaleDateString('pt-BR') : '-'}</span>
+                      <span className="font-bold text-slate-700">{formatDateBR(selectedExecutionForDetails.endDatePlanned)}</span>
                     </div>
                     <div className="flex justify-between items-center text-sm">
                       <span className="text-slate-500">Duração:</span>
@@ -814,11 +891,11 @@ export const PlanningView: React.FC<PlanningViewProps> = ({ projects, serviceExe
                   <div className="grid grid-cols-1 gap-3">
                     <div className="flex justify-between items-center text-sm">
                       <span className="text-slate-500">Início:</span>
-                      <span className="font-bold text-slate-700">{selectedExecutionForDetails.startDateReal ? new Date(selectedExecutionForDetails.startDateReal).toLocaleDateString('pt-BR') : '-'}</span>
+                      <span className="font-bold text-slate-700">{formatDateBR(selectedExecutionForDetails.startDateReal)}</span>
                     </div>
                     <div className="flex justify-between items-center text-sm">
                       <span className="text-slate-500">Fim:</span>
-                      <span className="font-bold text-slate-700">{selectedExecutionForDetails.endDateReal ? new Date(selectedExecutionForDetails.endDateReal).toLocaleDateString('pt-BR') : '-'}</span>
+                      <span className="font-bold text-slate-700">{formatDateBR(selectedExecutionForDetails.endDateReal)}</span>
                     </div>
                     <div className="flex justify-between items-center text-sm">
                       <span className="text-slate-500">Duração:</span>
