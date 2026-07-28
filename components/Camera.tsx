@@ -9,11 +9,21 @@ interface CameraProps {
 export const Camera: React.FC<CameraProps> = ({ onCapture, isLoading }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const startCamera = useCallback(async () => {
     setError(null);
+    if (streamRef.current) {
+      try {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      } catch (e) {
+        console.warn("Error stopping previous track", e);
+      }
+      streamRef.current = null;
+      setStream(null);
+    }
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error("Dispositivo de câmera não disponível ou não suportado pelo navegador.");
@@ -37,6 +47,7 @@ export const Camera: React.FC<CameraProps> = ({ onCapture, isLoading }) => {
         });
       }
       setStream(mediaStream);
+      streamRef.current = mediaStream;
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
       }
@@ -59,8 +70,12 @@ export const Camera: React.FC<CameraProps> = ({ onCapture, isLoading }) => {
   useEffect(() => {
     startCamera();
     return () => {
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
+      if (streamRef.current) {
+        try {
+          streamRef.current.getTracks().forEach(track => track.stop());
+        } catch (e) {
+          console.warn("Error stopping tracks on unmount", e);
+        }
       }
     };
   }, [startCamera]);
