@@ -2,6 +2,8 @@
 import React, { useState, useMemo } from 'react';
 import { Project, ConstructionUnit, Block, Floor, Unit, ServiceExecution, LaborTracking, FVS, Employee, Supplier } from '../types';
 import { generateId } from '../src/lib/utils';
+import { Camera } from './Camera';
+import { compressImage } from '../utils/imageCompressor';
 
 interface PlanningViewProps {
   projects: Project[];
@@ -22,6 +24,8 @@ export const PlanningView: React.FC<PlanningViewProps> = ({ projects, serviceExe
   const [selectedUnitForModal, setSelectedUnitForModal] = useState<{ unit: Unit; path: string } | null>(null);
   const [selectedExecutionForFvs, setSelectedExecutionForFvs] = useState<ServiceExecution | null>(null);
   const [selectedExecutionForDetails, setSelectedExecutionForDetails] = useState<ServiceExecution | null>(null);
+  const [cameraTarget, setCameraTarget] = useState<{ itemId: string; subItemId: string } | null>(null);
+  const [viewingImage, setViewingImage] = useState<string | null>(null);
   const [editingRealId, setEditingRealId] = useState<string | null>(null);
   const [editStartDateReal, setEditStartDateReal] = useState<string>('');
   const [editEndDateReal, setEditEndDateReal] = useState<string>('');
@@ -215,7 +219,8 @@ export const PlanningView: React.FC<PlanningViewProps> = ({ projects, serviceExe
           endDatePlanned: existing?.endDatePlanned,
           startDateReal: existing?.startDateReal || realStart,
           endDateReal: existing?.endDateReal,
-          fvsResults: existing?.fvsResults
+          fvsResults: existing?.fvsResults,
+          fvsPhotos: existing?.fvsPhotos
         });
       });
     });
@@ -708,6 +713,7 @@ export const PlanningView: React.FC<PlanningViewProps> = ({ projects, serviceExe
                                 <th className="py-2 text-[10px] font-bold text-slate-400 uppercase">Item de Inspeção</th>
                                 <th className="py-2 text-[10px] font-bold text-slate-400 uppercase">Tolerância</th>
                                 <th className="py-2 text-[10px] font-bold text-slate-400 uppercase text-center w-48">Avaliação</th>
+                                <th className="py-2 text-[10px] font-bold text-slate-400 uppercase text-center w-36">Evidência (Foto)</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
@@ -782,6 +788,97 @@ export const PlanningView: React.FC<PlanningViewProps> = ({ projects, serviceExe
                                         </button>
                                       )}
                                     </div>
+                                  </td>
+                                  <td className="py-3 px-2">
+                                    {(() => {
+                                      const photoUrl = selectedExecutionForFvs.fvsPhotos?.[item.id]?.[sub.id];
+                                      return (
+                                        <div className="flex items-center justify-center gap-2">
+                                          {photoUrl ? (
+                                            <div className="flex items-center gap-1.5">
+                                              <button
+                                                type="button"
+                                                onClick={() => setViewingImage(photoUrl)}
+                                                className="relative w-9 h-9 rounded-lg overflow-hidden border border-slate-300 shadow-sm hover:ring-2 hover:ring-indigo-500 transition-all flex-shrink-0"
+                                                title="Visualizar foto"
+                                              >
+                                                <img src={photoUrl} alt="Evidência" className="w-full h-full object-cover" />
+                                              </button>
+
+                                              <button
+                                                type="button"
+                                                onClick={() => {
+                                                  const currentPhotos = selectedExecutionForFvs.fvsPhotos || {};
+                                                  const itemPhotos = { ...(currentPhotos[item.id] || {}) };
+                                                  delete itemPhotos[sub.id];
+                                                  const updated: ServiceExecution = {
+                                                    ...selectedExecutionForFvs,
+                                                    fvsPhotos: {
+                                                      ...currentPhotos,
+                                                      [item.id]: itemPhotos
+                                                    }
+                                                  };
+                                                  setSelectedExecutionForFvs(updated);
+                                                  updateExecution(updated, true);
+                                                }}
+                                                className="p-1 text-slate-400 hover:text-rose-600 transition-colors"
+                                                title="Remover foto"
+                                              >
+                                                <i className="fas fa-trash-alt text-xs"></i>
+                                              </button>
+                                            </div>
+                                          ) : (
+                                            <div className="flex items-center gap-1">
+                                              <button
+                                                type="button"
+                                                onClick={() => setCameraTarget({ itemId: item.id, subItemId: sub.id })}
+                                                className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-colors"
+                                                title="Tirar foto com dispositivo"
+                                              >
+                                                <i className="fas fa-camera text-xs"></i>
+                                                <span className="hidden sm:inline">Câmera</span>
+                                              </button>
+
+                                              <label className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors" title="Fazer upload de foto">
+                                                <i className="fas fa-upload text-xs"></i>
+                                                <span className="hidden sm:inline">Upload</span>
+                                                <input
+                                                  type="file"
+                                                  accept="image/*"
+                                                  className="hidden"
+                                                  onChange={async (e) => {
+                                                    const file = e.target.files?.[0];
+                                                    if (file && selectedExecutionForFvs) {
+                                                      try {
+                                                        const compressed = await compressImage(file, 800, 800, 0.75);
+                                                        const currentPhotos = selectedExecutionForFvs.fvsPhotos || {};
+                                                        const itemPhotos = currentPhotos[item.id] || {};
+                                                        const updated: ServiceExecution = {
+                                                          ...selectedExecutionForFvs,
+                                                          fvsPhotos: {
+                                                            ...currentPhotos,
+                                                            [item.id]: {
+                                                              ...itemPhotos,
+                                                              [sub.id]: compressed
+                                                            }
+                                                          }
+                                                        };
+                                                        setSelectedExecutionForFvs(updated);
+                                                        updateExecution(updated, true);
+                                                        onFeedback?.('success', 'Foto anexada como evidência!');
+                                                      } catch (err) {
+                                                        console.error('Erro ao anexar foto:', err);
+                                                        onFeedback?.('error', 'Falha ao processar imagem.');
+                                                      }
+                                                    }
+                                                  }}
+                                                />
+                                              </label>
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })()}
                                   </td>
                                 </tr>
                               ))}
@@ -959,6 +1056,57 @@ export const PlanningView: React.FC<PlanningViewProps> = ({ projects, serviceExe
                       <div className="text-[9px] font-bold text-slate-500 uppercase">N/A</div>
                     </div>
                   </div>
+
+                  {(() => {
+                    const fvsId = selectedProject.fvsMapping?.[selectedExecutionForDetails.servicePath];
+                    const fvs = fvsList.find(f => f.id === fvsId);
+                    if (!fvs) return null;
+
+                    return (
+                      <div className="space-y-3 pt-2">
+                        <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Itens Inspecionados e Evidências</h5>
+                        <div className="space-y-3 max-h-60 overflow-y-auto pr-1 custom-scrollbar">
+                          {fvs.items.map(item => (
+                            <div key={item.id} className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs space-y-2">
+                              <div className="font-bold text-slate-700">{item.code} - {item.name}</div>
+                              <div className="space-y-1.5 pl-2 border-l-2 border-slate-300">
+                                {item.subItems.map(sub => {
+                                  const status = selectedExecutionForDetails.fvsResults?.[item.id]?.[sub.id];
+                                  const photo = selectedExecutionForDetails.fvsPhotos?.[item.id]?.[sub.id];
+                                  return (
+                                    <div key={sub.id} className="flex items-center justify-between gap-2 py-1">
+                                      <span className="text-slate-600 flex-1">{sub.inspectionItem}</span>
+                                      <div className="flex items-center gap-2">
+                                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                          status === 'C' ? 'bg-emerald-100 text-emerald-700' :
+                                          status === 'NC' ? 'bg-rose-100 text-rose-700' :
+                                          status === 'CR' ? 'bg-indigo-100 text-indigo-700' :
+                                          status === 'NA' ? 'bg-slate-200 text-slate-600' :
+                                          'bg-slate-100 text-slate-400'
+                                        }`}>
+                                          {status || 'Pendente'}
+                                        </span>
+                                        {photo && (
+                                          <button
+                                            type="button"
+                                            onClick={() => setViewingImage(photo)}
+                                            className="w-7 h-7 rounded border border-slate-300 overflow-hidden hover:ring-2 hover:ring-indigo-500 transition-all flex-shrink-0"
+                                            title="Ver Evidência"
+                                          >
+                                            <img src={photo} alt="Evidência" className="w-full h-full object-cover" />
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
             </div>
@@ -967,6 +1115,110 @@ export const PlanningView: React.FC<PlanningViewProps> = ({ projects, serviceExe
               <button 
                 onClick={() => setSelectedExecutionForDetails(null)}
                 className="px-8 py-2 bg-slate-800 text-white font-bold rounded-xl hover:bg-slate-900 transition-all"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Camera Modal for FVS Item Photo Evidence */}
+      {cameraTarget && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 rounded-2xl max-w-md w-full p-6 text-white space-y-4 border border-slate-700 shadow-2xl relative">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="font-bold text-sm flex items-center gap-2">
+                <i className="fas fa-camera text-indigo-400"></i>
+                Capturar Foto da Evidência
+              </h3>
+              <button
+                type="button"
+                onClick={() => setCameraTarget(null)}
+                className="text-slate-400 hover:text-white transition-colors"
+              >
+                <i className="fas fa-times text-lg"></i>
+              </button>
+            </div>
+
+            <Camera
+              onCapture={async (base64) => {
+                if (selectedExecutionForFvs && cameraTarget) {
+                  try {
+                    const compressed = await compressImage(base64, 800, 800, 0.75);
+                    const { itemId, subItemId } = cameraTarget;
+                    const currentPhotos = selectedExecutionForFvs.fvsPhotos || {};
+                    const itemPhotos = currentPhotos[itemId] || {};
+                    const updated: ServiceExecution = {
+                      ...selectedExecutionForFvs,
+                      fvsPhotos: {
+                        ...currentPhotos,
+                        [itemId]: {
+                          ...itemPhotos,
+                          [subItemId]: compressed
+                        }
+                      }
+                    };
+                    setSelectedExecutionForFvs(updated);
+                    updateExecution(updated, true);
+                    setCameraTarget(null);
+                    onFeedback?.('success', 'Foto capturada e salva com sucesso!');
+                  } catch (err) {
+                    console.error('Erro ao salvar foto da câmera:', err);
+                    onFeedback?.('error', 'Erro ao salvar a foto.');
+                  }
+                }
+              }}
+            />
+
+            <div className="text-center pt-2">
+              <button
+                type="button"
+                onClick={() => setCameraTarget(null)}
+                className="px-6 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs rounded-xl transition-colors"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Viewing Image Modal */}
+      {viewingImage && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 rounded-2xl max-w-2xl w-full p-4 text-white space-y-4 border border-slate-700 shadow-2xl relative">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3 px-2">
+              <h3 className="font-bold text-sm flex items-center gap-2">
+                <i className="fas fa-image text-indigo-400"></i>
+                Visualização da Evidência
+              </h3>
+              <button
+                type="button"
+                onClick={() => setViewingImage(null)}
+                className="text-slate-400 hover:text-white transition-colors"
+              >
+                <i className="fas fa-times text-lg"></i>
+              </button>
+            </div>
+
+            <div className="max-h-[70vh] overflow-hidden rounded-xl bg-black flex items-center justify-center">
+              <img src={viewingImage} alt="Evidência FVS" className="max-h-[70vh] w-auto object-contain" />
+            </div>
+
+            <div className="flex justify-between items-center px-2 pt-2">
+              <a
+                href={viewingImage}
+                download="evidencia-fvs.jpg"
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl flex items-center gap-2 transition-colors"
+              >
+                <i className="fas fa-download"></i>
+                Baixar Imagem
+              </a>
+              <button
+                type="button"
+                onClick={() => setViewingImage(null)}
+                className="px-6 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs rounded-xl transition-colors"
               >
                 Fechar
               </button>

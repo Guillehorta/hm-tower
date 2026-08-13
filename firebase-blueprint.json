@@ -100,6 +100,7 @@
         "servicePath": { "type": "string" },
         "componentPath": { "type": "string" },
         "fvsResults": { "type": "object" },
+        "fvsPhotos": { "type": "object" },
         "startDateReal": { "type": "string" },
         "endDateReal": { "type": "string" }
       },

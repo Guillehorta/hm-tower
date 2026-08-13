@@ -368,6 +368,11 @@ export interface ServiceExecution {
       [subItemId: string]: 'NC' | 'C' | 'NA' | 'CR'; // NC: Não Conforme, C: Conforme, NA: Não Aplicável, CR: Conforme após reinspeção
     }
   };
+  fvsPhotos?: {
+    [itemId: string]: {
+      [subItemId: string]: string; // Base64 image data for evidence
+    }
+  };
 }
 
 export interface SecullumEmployee {

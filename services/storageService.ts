@@ -294,35 +294,34 @@ function saveLocalCollection(key: string, data: any[], trigger = true) {
   } catch (e) {
     console.warn(`LocalStorage write failed for key fs_cache_${key}:`, e);
     
-    // Proactively handle QuotaExceededError or general storage limit failures
-    if (key === KEYS.LOGS) {
+    // Proactively handle QuotaExceededError or general storage limit failures by stripping heavy fields
+    try {
+      const strippedData = data.slice(-50).map(item => {
+        if (!item || typeof item !== 'object') return item;
+        const cleaned = { ...item };
+        if ('instructionFile' in cleaned) cleaned.instructionFile = undefined;
+        if ('fvsPhotos' in cleaned) cleaned.fvsPhotos = undefined;
+        if ('capturedPhoto' in cleaned) cleaned.capturedPhoto = undefined;
+        if ('photo' in cleaned) cleaned.photo = undefined;
+        return cleaned;
+      });
+      localStorage.setItem(`fs_cache_${key}`, JSON.stringify(strippedData));
+      console.log(`Successfully stored space-optimized version of ${key} to localStorage.`);
+    } catch (e2) {
+      console.warn(`Optimized write failed for key ${key}, trying minimal cache:`, e2);
       try {
-        // Trim to most recent 50 logs, and strip capturedPhoto for logs past index 3 to fit limits
-        const trimmedData = data.slice(0, 50).map((item, idx) => {
-          if (idx > 3 && item.capturedPhoto) {
-            return { ...item, capturedPhoto: "" };
-          }
-          return item;
+        const minimalData = data.slice(-10).map(item => {
+          if (!item || typeof item !== 'object') return item;
+          const cleaned = { ...item };
+          delete cleaned.instructionFile;
+          delete cleaned.fvsPhotos;
+          delete cleaned.capturedPhoto;
+          delete cleaned.photo;
+          return cleaned;
         });
-        localStorage.setItem(`fs_cache_${key}`, JSON.stringify(trimmedData));
-        console.log(`Successfully stored space-optimized version of ${key} to localStorage.`);
-      } catch (e2) {
-        console.warn("Optimized write failed, stripping all base64 photos from cached logs...", e2);
-        try {
-          // Fallback: keep only up to 20 logs and strip all photos entirely
-          const minimalData = data.slice(0, 20).map(item => ({ ...item, capturedPhoto: "" }));
-          localStorage.setItem(`fs_cache_${key}`, JSON.stringify(minimalData));
-        } catch (e3) {
-          console.error("Critical: Failed to save any log cache to localStorage", e3);
-        }
-      }
-    } else {
-      // General item pruning fallback for other collections
-      try {
-        const trimmedData = data.slice(-50);
-        localStorage.setItem(`fs_cache_${key}`, JSON.stringify(trimmedData));
-      } catch (e2) {
-        console.error(`Could not save trimmed fallback cache for key ${key}:`, e2);
+        localStorage.setItem(`fs_cache_${key}`, JSON.stringify(minimalData));
+      } catch (e3) {
+        console.warn(`Storage quota exhausted for key ${key}, skipping local cache write.`);
       }
     }
   }

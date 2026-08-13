@@ -39,7 +39,20 @@ export const Camera: React.FC<CameraProps> = ({ onCapture, isLoading }) => {
           },
           audio: false
         });
-      } catch (firstErr) {
+      } catch (firstErr: any) {
+        const firstErrName = firstErr?.name || '';
+        const firstErrMsg = (firstErr?.message || '').toLowerCase();
+        if (
+          firstErrName === 'NotAllowedError' ||
+          firstErrName === 'PermissionDeniedError' ||
+          firstErrName === 'PermissionDismissedError' ||
+          firstErrMsg.includes('permission dismissed') ||
+          firstErrMsg.includes('permission denied') ||
+          firstErrMsg.includes('dismissed') ||
+          firstErrMsg.includes('denied')
+        ) {
+          throw firstErr;
+        }
         console.warn("Could not load camera with ideal constraints, trying basic video constraints...", firstErr);
         mediaStream = await navigator.mediaDevices.getUserMedia({
           video: true,
@@ -53,17 +66,29 @@ export const Camera: React.FC<CameraProps> = ({ onCapture, isLoading }) => {
       }
     } catch (err: any) {
       let msg = "Não foi possível acessar a câmera.";
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        msg = "Permissão da câmera negada. Por favor, habilite o acesso à câmera nas configurações do seu navegador.";
-      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError' || err.message?.includes('Requested device not found')) {
+      const errName = err?.name || '';
+      const errMsg = (err?.message || '').toLowerCase();
+
+      if (
+        errName === 'NotAllowedError' || 
+        errName === 'PermissionDeniedError' || 
+        errName === 'PermissionDismissedError' ||
+        errMsg.includes('permission dismissed') ||
+        errMsg.includes('permission denied') ||
+        errMsg.includes('dismissed') ||
+        errMsg.includes('denied') ||
+        errMsg.includes('not allowed')
+      ) {
+        msg = "Acesso à câmera foi recusado ou dispensado. Você pode tentar novamente concedendo permissão ou fazer o upload de uma foto de arquivo.";
+      } else if (errName === 'NotFoundError' || errName === 'DevicesNotFoundError' || errMsg.includes('requested device not found')) {
         msg = "Nenhuma câmera encontrada no dispositivo. Por favor, faça o upload de um arquivo de foto.";
-      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+      } else if (errName === 'NotReadableError' || errName === 'TrackStartError') {
         msg = "A câmera está sendo usada por outro aplicativo.";
       } else if (err.message) {
         msg = err.message;
       }
       setError(msg);
-      console.error(err);
+      console.warn("Camera access status:", msg, err);
     }
   }, []);
 
